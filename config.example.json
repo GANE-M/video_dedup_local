@@ -1,0 +1,21 @@
+{
+  "crop_percent": 2.0,
+  "mirror": true,
+  "speed": 1.015,
+  "brightness": 0.01,
+  "contrast": 1.02,
+  "saturation": 1.03,
+  "color": "#8bc34a",
+  "color_opacity": 0.02,
+  "fade_seconds": 0.25,
+  "trim_start": 0.0,
+  "trim_end": 0.0,
+  "background_music": null,
+  "background_music_dir": null,
+  "music_volume": 0.08,
+  "keep_audio": true,
+  "crf": 20,
+  "preset": "medium",
+  "audio_bitrate": "192k",
+  "hardware_acceleration": "nvidia"
+}

@@ -1,0 +1,16 @@
+__pycache__/
+.venv/
+*.pyc
+*.pyo
+*.pyd
+work/
+_tmp*/
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.webm
+*.m4v
+*.srt
+*.ass
+*.vtt

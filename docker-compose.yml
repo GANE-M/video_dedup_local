@@ -1,0 +1,28 @@
+services:
+  subtitle-tool:
+    build:
+      context: .
+      args:
+        INSTALL_OCR: "0"
+    image: video-dedup-local:latest
+    volumes:
+      - ./work:/work
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+    command: ["--help"]
+
+  subtitle-tool-ocr:
+    build:
+      context: .
+      args:
+        INSTALL_OCR: "1"
+    image: video-dedup-local:ocr
+    volumes:
+      - ./work:/work
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+    command: ["--help"]
