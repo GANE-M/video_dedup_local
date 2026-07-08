@@ -64,6 +64,7 @@ def make_subtitle_source(
     input_video: Path,
     output_srt: Path,
     source_mode: str,
+    ocr_language: str,
     whisper_model: str,
     whisper_device: str,
     ffmpeg: str,
@@ -80,7 +81,7 @@ def make_subtitle_source(
     if source_mode in {"hard-ocr", "auto", "auto-ocr"}:
         try:
             print("字幕来源: 画面硬字幕 OCR")
-            subtitle_tool.ocr_hard_subtitles(input_video, output_srt, ffmpeg)
+            subtitle_tool.ocr_hard_subtitles(input_video, output_srt, ffmpeg, ocr_language=ocr_language)
             return
         except RuntimeError as exc:
             if source_mode in {"hard-ocr", "auto-ocr"}:
@@ -124,6 +125,7 @@ def process_video(args: argparse.Namespace, input_video: Path, output_video: Pat
                 input_video,
                 source_srt,
                 args.subtitle_source,
+                args.ocr_language,
                 args.whisper_model,
                 args.whisper_device,
                 ffmpeg,
@@ -134,7 +136,7 @@ def process_video(args: argparse.Namespace, input_video: Path, output_video: Pat
                 source_srt,
                 translated_srt,
                 args.target_language,
-                "auto",
+                args.source_language,
                 "openai-compatible",
                 args.llm_model,
                 args.parallel_batches,
@@ -162,6 +164,7 @@ def process_video(args: argparse.Namespace, input_video: Path, output_video: Pat
             args.cover_opacity,
             args.cover_color,
             args.cover_auto_detect,
+            args.ocr_language,
             args.font_size,
             args.hardware_acceleration,
             ffmpeg,
@@ -205,6 +208,8 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--enable-subtitles", action="store_true")
     parser.add_argument("--subtitle-source", choices=("auto", "auto-ocr", "soft", "hard-ocr", "asr"), default="hard-ocr")
     parser.add_argument("--target-language", default="English")
+    parser.add_argument("--source-language", default="auto")
+    parser.add_argument("--ocr-language", default="auto")
     parser.add_argument("--llm-model", default="deepseek-v4-flash")
     parser.add_argument("--parallel-batches", type=int, default=3)
     parser.add_argument("--whisper-model", default="medium")

@@ -348,13 +348,34 @@ def ocr_frame_text(ocr, frame: Path, min_confidence: float) -> str:
     return "\n".join(item[2] for item in lines).strip()
 
 
-def create_paddle_ocr():
+def ocr_lang_value(language: str) -> str:
+    normalized = (language or "auto").strip().lower()
+    mapping = {
+        "auto": "ch",
+        "自动": "ch",
+        "chinese": "ch",
+        "中文": "ch",
+        "zh": "ch",
+        "ch": "ch",
+        "english": "en",
+        "英语": "en",
+        "en": "en",
+        "arabic": "arabic",
+        "阿拉伯语": "arabic",
+        "ar": "arabic",
+    }
+    return mapping.get(normalized, normalized)
+
+
+def create_paddle_ocr(language: str = "auto"):
     from paddleocr import PaddleOCR
 
+    lang = ocr_lang_value(language)
+    print(f"OCR 语言模型: {lang}")
     try:
-        return PaddleOCR(use_angle_cls=False, lang="ch", show_log=False)
+        return PaddleOCR(use_angle_cls=False, lang=lang, show_log=False)
     except (TypeError, ValueError):
-        return PaddleOCR(use_angle_cls=False, lang="ch")
+        return PaddleOCR(use_angle_cls=False, lang=lang)
 
 
 def ocr_hard_subtitles(
@@ -365,6 +386,7 @@ def ocr_hard_subtitles(
     crop_bottom_percent: float = 35.0,
     min_confidence: float = 0.55,
     min_duration: float = 0.35,
+    ocr_language: str = "auto",
 ) -> None:
     try:
         from paddleocr import PaddleOCR
@@ -378,7 +400,7 @@ def ocr_hard_subtitles(
         if not frames:
             raise RuntimeError("未能截取用于 OCR 的画面。")
         print(f"硬字幕 OCR：抽帧 {len(frames)} 张，fps={fps}")
-        ocr = create_paddle_ocr()
+        ocr = create_paddle_ocr(ocr_language)
         items: list[SubtitleItem] = []
         active_text = ""
         active_norm = ""
@@ -421,6 +443,7 @@ def detect_hard_subtitle_region(
     max_frames: int,
     crop_bottom_percent: float,
     margin_percent: float,
+    ocr_language: str = "auto",
 ) -> dict:
     try:
         from paddleocr import PaddleOCR
@@ -430,7 +453,7 @@ def detect_hard_subtitle_region(
         frames = extract_frames_for_ocr(video, Path(tmp), ffmpeg, fps, max_frames, crop_bottom_percent)
         if not frames:
             raise RuntimeError("未能截取用于 OCR 的画面。")
-        ocr = create_paddle_ocr()
+        ocr = create_paddle_ocr(ocr_language)
         boxes: list[tuple[float, float, float, float]] = []
         for frame in frames:
             result = paddle_ocr_predict(ocr, frame)
@@ -471,7 +494,7 @@ def detect_hard_subtitle_region(
 
 def subtitle_style(layout: str, font_size: int, position: str) -> str:
     if position == "auto":
-        position = "above-original" if layout == "bilingual" else "bottom"
+        position = "top" if layout == "bilingual" else "bottom"
     if position == "top":
         alignment, margin_v = 8, 45
     elif position == "above-original":
@@ -494,6 +517,7 @@ def render_subtitle(
     cover_opacity: float,
     cover_color: str,
     cover_auto_detect: bool,
+    cover_ocr_language: str,
     font_size: int,
     hardware_acceleration: str,
     ffmpeg: str,
@@ -535,7 +559,7 @@ def render_subtitle(
     if should_cover:
         if cover_auto_detect and not dry_run:
             try:
-                region = detect_hard_subtitle_region(video, ffmpeg, fps=0.5, max_frames=30, crop_bottom_percent=35.0, margin_percent=1.5)
+                region = detect_hard_subtitle_region(video, ffmpeg, fps=0.5, max_frames=30, crop_bottom_percent=35.0, margin_percent=1.5, ocr_language=cover_ocr_language)
                 cover_y_percent = float(region["cover_y_percent"])
                 cover_height_percent = float(region["cover_height_percent"])
                 print(f"OCR 自动字幕区域: 起点 {cover_y_percent:.2f}%，高度 {cover_height_percent:.2f}%")
@@ -616,6 +640,7 @@ def make_parser() -> argparse.ArgumentParser:
     hard_ocr.add_argument("--fps", type=float, default=2.0)
     hard_ocr.add_argument("--crop-bottom-percent", type=float, default=35.0)
     hard_ocr.add_argument("--min-confidence", type=float, default=0.55)
+    hard_ocr.add_argument("--ocr-language", default="auto", help="auto/ch/en/arabic/ar/zh")
 
     region = sub.add_parser("detect-region", help="硬字幕视频：用 PaddleOCR 自动估计遮盖区域")
     region.add_argument("video")
@@ -623,6 +648,7 @@ def make_parser() -> argparse.ArgumentParser:
     region.add_argument("--max-frames", type=int, default=30)
     region.add_argument("--crop-bottom-percent", type=float, default=35.0)
     region.add_argument("--margin-percent", type=float, default=1.5)
+    region.add_argument("--ocr-language", default="auto", help="auto/ch/en/arabic/ar/zh")
 
     render = sub.add_parser("render", help="替换软字幕或烧录硬字幕")
     render.add_argument("video")
@@ -637,6 +663,7 @@ def make_parser() -> argparse.ArgumentParser:
     render.add_argument("--cover-height-percent", type=float, default=11.0, help="遮盖区域高度百分比")
     render.add_argument("--cover-opacity", type=float, default=0.72, help="遮盖蒙版透明度")
     render.add_argument("--cover-color", default="white", help="遮盖蒙版颜色，默认 white")
+    render.add_argument("--cover-ocr-language", default="auto", help="自动识别遮盖区域时使用的 OCR 语言")
     render.add_argument("--font-size", type=int, default=28)
     render.add_argument("--hardware-acceleration", choices=("auto", "nvidia", "amd", "intel", "apple", "cpu"), default="auto")
     return parser
@@ -661,9 +688,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "transcribe":
             transcribe_video(Path(args.video), Path(args.output_srt), args.model_size, args.language, args.device, ffmpeg)
         elif args.command == "hard-ocr":
-            ocr_hard_subtitles(Path(args.video), Path(args.output_srt), ffmpeg, args.fps, args.crop_bottom_percent, args.min_confidence)
+            ocr_hard_subtitles(Path(args.video), Path(args.output_srt), ffmpeg, args.fps, args.crop_bottom_percent, args.min_confidence, ocr_language=args.ocr_language)
         elif args.command == "detect-region":
-            region = detect_hard_subtitle_region(Path(args.video), ffmpeg, args.fps, args.max_frames, args.crop_bottom_percent, args.margin_percent)
+            region = detect_hard_subtitle_region(Path(args.video), ffmpeg, args.fps, args.max_frames, args.crop_bottom_percent, args.margin_percent, args.ocr_language)
             print(json.dumps(region, ensure_ascii=False, indent=2))
             print(f"建议遮盖参数：起点 {region['cover_y_percent']}%，高度 {region['cover_height_percent']}%")
         elif args.command == "render":
@@ -680,6 +707,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.cover_opacity,
                 args.cover_color,
                 args.cover_auto_detect,
+                args.cover_ocr_language,
                 args.font_size,
                 args.hardware_acceleration,
                 ffmpeg,

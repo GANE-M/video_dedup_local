@@ -84,6 +84,8 @@ class VideoToolApp(tk.Tk):
         self.subtitle_cover_height = tk.DoubleVar(value=11.0)
         self.subtitle_cover_opacity = tk.DoubleVar(value=0.72)
         self.subtitle_font_size = tk.IntVar(value=28)
+        self.subtitle_ocr_language = tk.StringVar(value="自动")
+        self.subtitle_source_language = tk.StringVar(value="自动")
         self.subtitle_target_language = tk.StringVar(value="English")
         self.llm_api_key = tk.StringVar(value=os.environ.get("OPENAI_API_KEY", ""))
         self.llm_base_url = tk.StringVar(value=os.environ.get("OPENAI_BASE_URL", "https://theruta.ai/api/v1/chat/completions"))
@@ -189,37 +191,42 @@ class VideoToolApp(tk.Tk):
         ttk.Checkbutton(subtitle_tab, text="启用自动字幕流水线：自动取字幕/识别语音 → LLM 翻译 → 写入成片", variable=self.enable_subtitle_pipeline).grid(row=0, column=0, columnspan=3, sticky="w", pady=6)
         ttk.Label(subtitle_tab, text="字幕来源").grid(row=1, column=0, sticky="w", pady=5)
         ttk.Combobox(subtitle_tab, textvariable=self.subtitle_source, values=("只用硬字幕OCR", "自动：软字幕→硬字幕OCR", "自动：软字幕→硬字幕OCR→语音识别", "只用软字幕轨道", "只用语音识别"), state="readonly", width=34).grid(row=1, column=1, sticky="w", padx=8)
-        ttk.Label(subtitle_tab, text="目标语言").grid(row=2, column=0, sticky="w", pady=5)
-        ttk.Entry(subtitle_tab, textvariable=self.subtitle_target_language, width=18).grid(row=2, column=1, sticky="w", padx=8)
-        ttk.Label(subtitle_tab, text="API Key").grid(row=3, column=0, sticky="w", pady=5)
-        ttk.Entry(subtitle_tab, textvariable=self.llm_api_key, show="*").grid(row=3, column=1, sticky="ew", padx=8)
-        ttk.Label(subtitle_tab, text="接口地址").grid(row=4, column=0, sticky="w", pady=5)
-        ttk.Entry(subtitle_tab, textvariable=self.llm_base_url).grid(row=4, column=1, sticky="ew", padx=8)
-        ttk.Label(subtitle_tab, text="模型名").grid(row=5, column=0, sticky="w", pady=5)
-        ttk.Entry(subtitle_tab, textvariable=self.llm_model, width=24).grid(row=5, column=1, sticky="w", padx=8)
-        ttk.Label(subtitle_tab, text="DeepSeek/OpenAI-compatible 均可；模型名填供应商后台显示的准确 ID。", foreground="#666").grid(row=6, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        ttk.Label(subtitle_tab, text="原字幕语言（OCR）").grid(row=2, column=0, sticky="w", pady=5)
+        ttk.Combobox(subtitle_tab, textvariable=self.subtitle_ocr_language, values=("自动", "中文", "英语", "阿拉伯语"), state="readonly", width=18).grid(row=2, column=1, sticky="w", padx=8)
+        ttk.Label(subtitle_tab, text="翻译源语言").grid(row=3, column=0, sticky="w", pady=5)
+        ttk.Combobox(subtitle_tab, textvariable=self.subtitle_source_language, values=("自动", "中文", "英语", "阿拉伯语"), state="readonly", width=18).grid(row=3, column=1, sticky="w", padx=8)
+        ttk.Label(subtitle_tab, text="目标语言").grid(row=4, column=0, sticky="w", pady=5)
+        ttk.Entry(subtitle_tab, textvariable=self.subtitle_target_language, width=18).grid(row=4, column=1, sticky="w", padx=8)
+        ttk.Label(subtitle_tab, text="API Key").grid(row=5, column=0, sticky="w", pady=5)
+        ttk.Entry(subtitle_tab, textvariable=self.llm_api_key, show="*").grid(row=5, column=1, sticky="ew", padx=8)
+        ttk.Label(subtitle_tab, text="接口地址").grid(row=6, column=0, sticky="w", pady=5)
+        ttk.Entry(subtitle_tab, textvariable=self.llm_base_url).grid(row=6, column=1, sticky="ew", padx=8)
+        ttk.Label(subtitle_tab, text="模型名").grid(row=7, column=0, sticky="w", pady=5)
+        ttk.Entry(subtitle_tab, textvariable=self.llm_model, width=24).grid(row=7, column=1, sticky="w", padx=8)
+        ttk.Label(subtitle_tab, text="DeepSeek/OpenAI-compatible 均可；模型名填供应商后台显示的准确 ID。", foreground="#666").grid(row=8, column=0, columnspan=3, sticky="w", pady=(0, 8))
 
-        ttk.Label(subtitle_tab, text="添加方式").grid(row=7, column=0, sticky="w", pady=5)
-        ttk.Combobox(subtitle_tab, textvariable=self.subtitle_mode, values=("烧录到画面", "封装软字幕"), state="readonly", width=20).grid(row=7, column=1, sticky="w", padx=8)
-        ttk.Label(subtitle_tab, text="覆盖形式").grid(row=8, column=0, sticky="w", pady=5)
-        ttk.Combobox(subtitle_tab, textvariable=self.subtitle_layout, values=("覆盖原字幕", "双语字幕"), state="readonly", width=20).grid(row=8, column=1, sticky="w", padx=8)
-        ttk.Label(subtitle_tab, text="字幕位置").grid(row=9, column=0, sticky="w", pady=5)
-        ttk.Combobox(subtitle_tab, textvariable=self.subtitle_position, values=("自动", "原字幕上方", "底部", "顶部"), state="readonly", width=20).grid(row=9, column=1, sticky="w", padx=8)
-        ttk.Checkbutton(subtitle_tab, text="覆盖原字幕时遮住旧字幕区域", variable=self.subtitle_cover).grid(row=10, column=0, columnspan=3, sticky="w", pady=6)
-        ttk.Checkbutton(subtitle_tab, text="自动识别原字幕区域（OCR，失败则用下方手动参数）", variable=self.subtitle_cover_auto_detect).grid(row=11, column=0, columnspan=3, sticky="w", pady=6)
-        self._scale_row(subtitle_tab, 12, "手动遮盖起点高度 (%)", self.subtitle_cover_y, 50, 95, 1)
-        self._scale_row(subtitle_tab, 13, "手动遮盖高度 (%)", self.subtitle_cover_height, 4, 30, 1)
-        self._scale_row(subtitle_tab, 14, "白色蒙版透明度", self.subtitle_cover_opacity, 0, 1, 0.02)
-        self._scale_row(subtitle_tab, 15, "字幕字号", self.subtitle_font_size, 16, 64, 1)
-        ttk.Label(subtitle_tab, text="Whisper 模型").grid(row=16, column=0, sticky="w", pady=5)
-        ttk.Entry(subtitle_tab, textvariable=self.whisper_model, width=18).grid(row=16, column=1, sticky="w", padx=8)
-        ttk.Label(subtitle_tab, text="Whisper 设备").grid(row=17, column=0, sticky="w", pady=5)
-        ttk.Combobox(subtitle_tab, textvariable=self.whisper_device, values=("cuda", "cpu"), state="readonly", width=18).grid(row=17, column=1, sticky="w", padx=8)
-        ttk.Label(subtitle_tab, text="字幕处理后端").grid(row=18, column=0, sticky="w", pady=5)
-        ttk.Combobox(subtitle_tab, textvariable=self.subtitle_backend, values=("Docker OCR", "本机 Python"), state="readonly", width=18).grid(row=18, column=1, sticky="w", padx=8)
-        ttk.Label(subtitle_tab, text="Docker 镜像").grid(row=19, column=0, sticky="w", pady=5)
-        ttk.Entry(subtitle_tab, textvariable=self.docker_image, width=28).grid(row=19, column=1, sticky="w", padx=8)
-        ttk.Label(subtitle_tab, text="Docker Desktop 需要处于运行状态；容器只在任务期间临时启动。", foreground="#666").grid(row=20, column=0, columnspan=3, sticky="w")
+        ttk.Label(subtitle_tab, text="添加方式").grid(row=9, column=0, sticky="w", pady=5)
+        ttk.Combobox(subtitle_tab, textvariable=self.subtitle_mode, values=("烧录到画面", "封装软字幕"), state="readonly", width=20).grid(row=9, column=1, sticky="w", padx=8)
+        ttk.Label(subtitle_tab, text="覆盖形式").grid(row=10, column=0, sticky="w", pady=5)
+        ttk.Combobox(subtitle_tab, textvariable=self.subtitle_layout, values=("覆盖原字幕", "双语字幕"), state="readonly", width=20).grid(row=10, column=1, sticky="w", padx=8)
+        ttk.Label(subtitle_tab, text="字幕位置").grid(row=11, column=0, sticky="w", pady=5)
+        ttk.Combobox(subtitle_tab, textvariable=self.subtitle_position, values=("自动", "底部", "顶部"), state="readonly", width=20).grid(row=11, column=1, sticky="w", padx=8)
+        ttk.Label(subtitle_tab, text="提示：双语字幕的“自动”位置会放顶部，避免和原字幕换行重叠。", foreground="#666").grid(row=12, column=0, columnspan=3, sticky="w")
+        ttk.Checkbutton(subtitle_tab, text="覆盖原字幕时遮住旧字幕区域", variable=self.subtitle_cover).grid(row=13, column=0, columnspan=3, sticky="w", pady=6)
+        ttk.Checkbutton(subtitle_tab, text="自动识别原字幕区域（OCR，失败则用下方手动参数）", variable=self.subtitle_cover_auto_detect).grid(row=14, column=0, columnspan=3, sticky="w", pady=6)
+        self._scale_row(subtitle_tab, 15, "手动遮盖起点高度 (%)", self.subtitle_cover_y, 50, 95, 1)
+        self._scale_row(subtitle_tab, 16, "手动遮盖高度 (%)", self.subtitle_cover_height, 4, 30, 1)
+        self._scale_row(subtitle_tab, 17, "白色蒙版透明度", self.subtitle_cover_opacity, 0, 1, 0.02)
+        self._scale_row(subtitle_tab, 18, "字幕字号", self.subtitle_font_size, 16, 64, 1)
+        ttk.Label(subtitle_tab, text="Whisper 模型").grid(row=19, column=0, sticky="w", pady=5)
+        ttk.Entry(subtitle_tab, textvariable=self.whisper_model, width=18).grid(row=19, column=1, sticky="w", padx=8)
+        ttk.Label(subtitle_tab, text="Whisper 设备").grid(row=20, column=0, sticky="w", pady=5)
+        ttk.Combobox(subtitle_tab, textvariable=self.whisper_device, values=("cuda", "cpu"), state="readonly", width=18).grid(row=20, column=1, sticky="w", padx=8)
+        ttk.Label(subtitle_tab, text="字幕处理后端").grid(row=21, column=0, sticky="w", pady=5)
+        ttk.Combobox(subtitle_tab, textvariable=self.subtitle_backend, values=("Docker OCR", "本机 Python"), state="readonly", width=18).grid(row=21, column=1, sticky="w", padx=8)
+        ttk.Label(subtitle_tab, text="Docker 镜像").grid(row=22, column=0, sticky="w", pady=5)
+        ttk.Entry(subtitle_tab, textvariable=self.docker_image, width=28).grid(row=22, column=1, sticky="w", padx=8)
+        ttk.Label(subtitle_tab, text="Docker Desktop 需要处于运行状态；容器只在任务期间临时启动。", foreground="#666").grid(row=23, column=0, columnspan=3, sticky="w")
         subtitle_tab.columnconfigure(1, weight=1)
 
         log_frame = ttk.LabelFrame(root, text="运行日志", padding=6)
@@ -384,10 +391,25 @@ class VideoToolApp(tk.Tk):
     def _subtitle_position_value(self) -> str:
         return {
             "自动": "auto",
-            "原字幕上方": "above-original",
             "底部": "bottom",
             "顶部": "top",
         }.get(self.subtitle_position.get(), "auto")
+
+    def _ocr_language_value(self) -> str:
+        return {
+            "自动": "auto",
+            "中文": "ch",
+            "英语": "en",
+            "阿拉伯语": "arabic",
+        }.get(self.subtitle_ocr_language.get(), "auto")
+
+    def _source_language_value(self) -> str:
+        return {
+            "自动": "auto",
+            "中文": "Chinese",
+            "英语": "English",
+            "阿拉伯语": "Arabic",
+        }.get(self.subtitle_source_language.get(), "auto")
 
     def _llm_env(self) -> dict[str, str]:
         env: dict[str, str] = {}
@@ -563,6 +585,8 @@ class VideoToolApp(tk.Tk):
             output,
             "--target-language",
             self.subtitle_target_language.get().strip() or "English",
+            "--source-language",
+            self._source_language_value(),
             "--provider",
             self.subtitle_provider.get(),
             "--parallel-batches",
@@ -613,6 +637,8 @@ class VideoToolApp(tk.Tk):
                 str(self.subtitle_cover_opacity.get()),
                 "--cover-color",
                 "white",
+                "--cover-ocr-language",
+                self._ocr_language_value(),
             ]
             if self.subtitle_cover_auto_detect.get():
                 command += ["--cover-auto-detect"]
@@ -767,6 +793,10 @@ class VideoToolApp(tk.Tk):
                 self._subtitle_source_value(),
                 "--target-language",
                 self.subtitle_target_language.get().strip() or "English",
+                "--source-language",
+                self._source_language_value(),
+                "--ocr-language",
+                self._ocr_language_value(),
                 "--llm-model",
                     self.llm_model.get().strip() or "deepseek-v4-flash",
                 "--parallel-batches",
@@ -774,7 +804,7 @@ class VideoToolApp(tk.Tk):
                 "--whisper-model",
                 self.whisper_model.get().strip() or "medium",
                 "--whisper-device",
-                self.whisper_device.get(),
+                "cpu" if use_docker else self.whisper_device.get(),
                 "--subtitle-mode",
                 self._subtitle_mode_value(),
                 "--subtitle-layout",
