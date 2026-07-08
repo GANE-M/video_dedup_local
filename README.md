@@ -59,6 +59,7 @@ python .\video_dedup.py input.mp4 output.mp4 --dry-run
 - 自动调用 OpenAI-compatible LLM 接口翻译字幕。
 - 自动将翻译字幕封装为软字幕，或烧录到画面；GUI 不需要手动选择/导出字幕文件。
 - 原字幕语言可选择“自动/中文/英语/阿拉伯语”；翻译源语言也可单独选择，默认自动交给 LLM 判断。
+- 阿拉伯语硬字幕会使用 EasyOCR；中文/英文默认使用 PaddleOCR。
 - 两种烧录形式：
   - `双语字幕`：不遮住原字幕，新字幕自动放在顶部，避免贴着旧字幕导致换行重叠。
   - `覆盖原字幕`：优先用 OCR 自动识别原字幕区域，再用白色半透明蒙版遮住旧字幕并叠加新字幕；OCR 不可用或识别失败时回退到手动百分比参数。
@@ -102,6 +103,7 @@ python .\subtitle_tool.py translate "D:\video\input.srt" "D:\video\input_en.srt"
 
 ```powershell
 pip install paddleocr paddlepaddle pillow
+pip install easyocr
 ```
 
 只有需要“无字幕视频语音识别”时，才安装：

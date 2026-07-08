@@ -330,9 +330,13 @@ def points_bounds(points) -> tuple[float, float, float, float] | None:
 
 
 def ocr_frame_text(ocr, frame: Path, min_confidence: float) -> str:
-    result = paddle_ocr_predict(ocr, frame)
     lines: list[tuple[float, float, str]] = []
-    for points, text, confidence in iter_ocr_lines(result):
+    if hasattr(ocr, "readtext"):
+        ocr_lines = ((points, text, confidence) for points, text, confidence in ocr.readtext(str(frame), detail=1, paragraph=False))
+    else:
+        result = paddle_ocr_predict(ocr, frame)
+        ocr_lines = iter_ocr_lines(result)
+    for points, text, confidence in ocr_lines:
         if confidence < min_confidence:
             continue
         text = text.strip()
@@ -367,11 +371,18 @@ def ocr_lang_value(language: str) -> str:
     return mapping.get(normalized, normalized)
 
 
-def create_paddle_ocr(language: str = "auto"):
-    from paddleocr import PaddleOCR
-
+def create_ocr(language: str = "auto"):
     lang = ocr_lang_value(language)
     print(f"OCR 语言模型: {lang}")
+    if lang == "arabic":
+        try:
+            import easyocr
+        except ImportError as exc:
+            raise RuntimeError("阿拉伯语 OCR 需要 EasyOCR。请执行：.\\.venv-ocr\\Scripts\\python.exe -m pip install easyocr") from exc
+        return easyocr.Reader(["ar"], gpu=False, verbose=False)
+
+    from paddleocr import PaddleOCR
+
     try:
         return PaddleOCR(use_angle_cls=False, lang=lang, show_log=False)
     except (TypeError, ValueError):
@@ -400,7 +411,7 @@ def ocr_hard_subtitles(
         if not frames:
             raise RuntimeError("未能截取用于 OCR 的画面。")
         print(f"硬字幕 OCR：抽帧 {len(frames)} 张，fps={fps}")
-        ocr = create_paddle_ocr(ocr_language)
+        ocr = create_ocr(ocr_language)
         items: list[SubtitleItem] = []
         active_text = ""
         active_norm = ""
@@ -453,11 +464,15 @@ def detect_hard_subtitle_region(
         frames = extract_frames_for_ocr(video, Path(tmp), ffmpeg, fps, max_frames, crop_bottom_percent)
         if not frames:
             raise RuntimeError("未能截取用于 OCR 的画面。")
-        ocr = create_paddle_ocr(ocr_language)
+        ocr = create_ocr(ocr_language)
         boxes: list[tuple[float, float, float, float]] = []
         for frame in frames:
-            result = paddle_ocr_predict(ocr, frame)
-            for points, _text, confidence in iter_ocr_lines(result):
+            if hasattr(ocr, "readtext"):
+                ocr_lines = ((points, text, confidence) for points, text, confidence in ocr.readtext(str(frame), detail=1, paragraph=False))
+            else:
+                result = paddle_ocr_predict(ocr, frame)
+                ocr_lines = iter_ocr_lines(result)
+            for points, _text, confidence in ocr_lines:
                 if confidence < 0.55:
                     continue
                 bounds = points_bounds(points)
