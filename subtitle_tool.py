@@ -170,6 +170,7 @@ def translate_texts_openai_compatible(texts: list[str], target_language: str, so
         raise ValueError("未设置 OPENAI_API_KEY 或 LLM_API_KEY，无法自动翻译。")
     base_url = (os.environ.get("OPENAI_BASE_URL") or "https://theruta.ai/api/v1/chat/completions").rstrip("/")
     url = base_url if base_url.endswith("/chat/completions") else f"{base_url}/chat/completions"
+    print(f"AI 翻译请求: model={model}, endpoint={url}, items={len(texts)}")
     prompt = (
         "You are a professional short-drama subtitle translator. "
         "Translate each subtitle item to the target language naturally and concisely. "
@@ -214,6 +215,7 @@ def translate_texts_openai_compatible(texts: list[str], target_language: str, so
         translated = json.loads(match.group(0))
     if not isinstance(translated, list) or len(translated) != len(texts):
         raise RuntimeError("翻译结果数量与字幕数量不一致。")
+    print(f"AI 翻译成功: items={len(translated)}")
     return [str(item) for item in translated]
 
 
@@ -277,22 +279,71 @@ def normalize_ocr_text(text: str) -> str:
     return re.sub(r"\s+", "", text).strip()
 
 
+def paddle_ocr_predict(ocr, frame: Path):
+    try:
+        return ocr.ocr(str(frame), cls=False)
+    except TypeError:
+        return ocr.ocr(str(frame))
+
+
+def iter_ocr_lines(result):
+    if not result:
+        return
+    pages = result if isinstance(result, list) else [result]
+    for page in pages:
+        if not page:
+            continue
+        if isinstance(page, dict):
+            texts = page.get("rec_texts") or page.get("texts") or []
+            scores = page.get("rec_scores") or page.get("scores") or [1.0] * len(texts)
+            polys = page.get("rec_polys") or page.get("dt_polys") or page.get("boxes") or []
+            for idx, text in enumerate(texts):
+                points = polys[idx] if idx < len(polys) else []
+                confidence = float(scores[idx]) if idx < len(scores) else 1.0
+                yield points, str(text), confidence
+            continue
+        if isinstance(page, list):
+            for line in page:
+                if not line or len(line) < 2:
+                    continue
+                points = line[0]
+                text_info = line[1]
+                if isinstance(text_info, (list, tuple)) and len(text_info) >= 2:
+                    text = str(text_info[0])
+                    confidence = float(text_info[1])
+                else:
+                    text = str(text_info)
+                    confidence = 1.0
+                yield points, text, confidence
+
+
+def points_bounds(points) -> tuple[float, float, float, float] | None:
+    try:
+        coords = [(float(p[0]), float(p[1])) for p in points]
+    except (TypeError, ValueError, IndexError):
+        return None
+    if not coords:
+        return None
+    xs = [item[0] for item in coords]
+    ys = [item[1] for item in coords]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
 def ocr_frame_text(ocr, frame: Path, min_confidence: float) -> str:
-    result = ocr.ocr(str(frame), cls=False)
-    if not result or not result[0]:
-        return ""
+    result = paddle_ocr_predict(ocr, frame)
     lines: list[tuple[float, float, str]] = []
-    for line in result[0]:
-        points = line[0]
-        confidence = float(line[1][1]) if len(line) > 1 else 0
+    for points, text, confidence in iter_ocr_lines(result):
         if confidence < min_confidence:
             continue
-        text = str(line[1][0]).strip() if len(line) > 1 else ""
+        text = text.strip()
         if not text:
             continue
-        ys = [p[1] for p in points]
-        xs = [p[0] for p in points]
-        lines.append((min(ys), min(xs), text))
+        bounds = points_bounds(points)
+        if bounds:
+            min_x, min_y, _max_x, _max_y = bounds
+            lines.append((min_y, min_x, text))
+        else:
+            lines.append((0.0, float(len(lines)), text))
     lines.sort()
     return "\n".join(item[2] for item in lines).strip()
 
@@ -382,17 +433,13 @@ def detect_hard_subtitle_region(
         ocr = create_paddle_ocr()
         boxes: list[tuple[float, float, float, float]] = []
         for frame in frames:
-            result = ocr.ocr(str(frame), cls=False)
-            if not result or not result[0]:
-                continue
-            for line in result[0]:
-                points = line[0]
-                confidence = float(line[1][1]) if len(line) > 1 else 0
+            result = paddle_ocr_predict(ocr, frame)
+            for points, _text, confidence in iter_ocr_lines(result):
                 if confidence < 0.55:
                     continue
-                xs = [p[0] for p in points]
-                ys = [p[1] for p in points]
-                boxes.append((min(xs), min(ys), max(xs), max(ys)))
+                bounds = points_bounds(points)
+                if bounds:
+                    boxes.append(bounds)
         if not boxes:
             raise RuntimeError("没有在底部区域识别到稳定字幕。可以改用手动遮盖参数。")
         min_y = min(box[1] for box in boxes)
