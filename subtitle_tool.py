@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -193,18 +194,40 @@ def translate_texts_openai_compatible(texts: list[str], target_language: str, so
         ],
         "temperature": 0.2,
     }
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=120) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"翻译接口失败: HTTP {exc.code} {body}") from exc
+    request_data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    data = None
+    for attempt in range(1, 4):
+        request = urllib.request.Request(
+            url,
+            data=request_data,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "video-dedup-local/1.0",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            break
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            retryable = exc.code in {403, 408, 409, 429, 500, 502, 503, 504}
+            if not retryable or attempt >= 3:
+                raise RuntimeError(f"翻译接口失败: HTTP {exc.code} {body}") from exc
+            delay = 2 ** attempt
+            print(f"AI 请求失败，{delay} 秒后重试 ({attempt}/3): HTTP {exc.code}")
+            time.sleep(delay)
+        except urllib.error.URLError as exc:
+            if attempt >= 3:
+                raise RuntimeError(f"翻译接口连接失败: {exc}") from exc
+            delay = 2 ** attempt
+            print(f"AI 连接失败，{delay} 秒后重试 ({attempt}/3): {exc}")
+            time.sleep(delay)
+    if data is None:
+        raise RuntimeError("翻译接口未返回数据")
     content = data["choices"][0]["message"]["content"].strip()
     try:
         translated = json.loads(content)
@@ -377,9 +400,12 @@ def create_ocr(language: str = "auto"):
     if lang == "arabic":
         try:
             import easyocr
+            import torch
         except ImportError as exc:
             raise RuntimeError("阿拉伯语 OCR 需要 EasyOCR。请执行：.\\.venv-ocr\\Scripts\\python.exe -m pip install easyocr") from exc
-        return easyocr.Reader(["ar"], gpu=False, verbose=False)
+        use_gpu = torch.cuda.is_available()
+        print(f"EasyOCR 设备: {'cuda' if use_gpu else 'cpu'}")
+        return easyocr.Reader(["ar"], gpu=use_gpu, verbose=False)
 
     from paddleocr import PaddleOCR
 

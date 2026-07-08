@@ -90,6 +90,7 @@ class VideoToolApp(tk.Tk):
         self.llm_api_key = tk.StringVar(value=os.environ.get("OPENAI_API_KEY", ""))
         self.llm_base_url = tk.StringVar(value=os.environ.get("OPENAI_BASE_URL", "https://theruta.ai/api/v1/chat/completions"))
         self.llm_model = tk.StringVar(value=os.environ.get("OPENAI_MODEL", "deepseek-v4-flash"))
+        self.llm_parallel_batches = tk.IntVar(value=2)
         self.whisper_model = tk.StringVar(value="medium")
         self.whisper_device = tk.StringVar(value="cuda")
         self.subtitle_backend = tk.StringVar(value="Docker OCR")
@@ -203,6 +204,10 @@ class VideoToolApp(tk.Tk):
         ttk.Entry(subtitle_tab, textvariable=self.llm_base_url).grid(row=6, column=1, sticky="ew", padx=8)
         ttk.Label(subtitle_tab, text="模型名").grid(row=7, column=0, sticky="w", pady=5)
         ttk.Entry(subtitle_tab, textvariable=self.llm_model, width=24).grid(row=7, column=1, sticky="w", padx=8)
+        llm_parallel = ttk.Frame(subtitle_tab)
+        llm_parallel.grid(row=7, column=2, sticky="w")
+        ttk.Label(llm_parallel, text="LLM并发").pack(side="left")
+        ttk.Spinbox(llm_parallel, from_=1, to=4, textvariable=self.llm_parallel_batches, width=4).pack(side="left", padx=(5, 0))
         ttk.Label(subtitle_tab, text="DeepSeek/OpenAI-compatible 均可；模型名填供应商后台显示的准确 ID。", foreground="#666").grid(row=8, column=0, columnspan=3, sticky="w", pady=(0, 8))
 
         ttk.Label(subtitle_tab, text="添加方式").grid(row=9, column=0, sticky="w", pady=5)
@@ -369,6 +374,12 @@ class VideoToolApp(tk.Tk):
     def _parallel_limit(self) -> int:
         try:
             return max(1, min(6, int(self.max_parallel_tasks.get())))
+        except (TypeError, ValueError, tk.TclError):
+            return 2
+
+    def _llm_parallel_limit(self) -> int:
+        try:
+            return max(1, min(4, int(self.llm_parallel_batches.get())))
         except (TypeError, ValueError, tk.TclError):
             return 2
 
@@ -590,7 +601,7 @@ class VideoToolApp(tk.Tk):
             "--provider",
             self.subtitle_provider.get(),
             "--parallel-batches",
-            str(self._parallel_limit()),
+            str(self._llm_parallel_limit()),
         ]
         self._start_external_command(command, "翻译字幕中…")
 
@@ -800,7 +811,7 @@ class VideoToolApp(tk.Tk):
                 "--llm-model",
                     self.llm_model.get().strip() or "deepseek-v4-flash",
                 "--parallel-batches",
-                str(self._parallel_limit()),
+                str(self._llm_parallel_limit()),
                 "--whisper-model",
                 self.whisper_model.get().strip() or "medium",
                 "--whisper-device",
