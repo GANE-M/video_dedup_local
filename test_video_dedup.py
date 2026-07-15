@@ -18,7 +18,7 @@ class CommandTests(unittest.TestCase):
         )
         joined = " ".join(command)
         self.assertIn("crop=", joined)
-        self.assertIn("hflip", joined)
+        self.assertNotIn("hflip", joined)
         self.assertIn("atempo=", joined)
         self.assertIn("local-transform-", joined)
 

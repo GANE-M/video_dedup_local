@@ -1,6 +1,6 @@
 {
   "crop_percent": 2.0,
-  "mirror": true,
+  "mirror": false,
   "speed": 1.015,
   "brightness": 0.01,
   "contrast": 1.02,
@@ -14,7 +14,7 @@
   "background_music_dir": null,
   "music_volume": 0.08,
   "keep_audio": true,
-  "crf": 20,
+  "crf": 15,
   "preset": "medium",
   "audio_bitrate": "192k",
   "hardware_acceleration": "nvidia"
