@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import shutil
 import subprocess
@@ -21,6 +22,45 @@ from typing import Sequence
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
 AUDIO_SUFFIXES = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
 INSTALL_FFMPEG = Path(r"D:\yijianmei\resources\extraResources\ffmpeg\win\bin\ffmpeg.exe")
+_ORIGINAL_POPEN = subprocess.Popen
+_HIDDEN_SUBPROCESS_POLICY_INSTALLED = False
+
+
+def install_hidden_subprocess_policy() -> None:
+    """Hide Windows consoles created by this process or imported ML libraries."""
+    global _HIDDEN_SUBPROCESS_POLICY_INSTALLED
+    if os.name != "nt" or _HIDDEN_SUBPROCESS_POLICY_INSTALLED:
+        return
+
+    class HiddenPopen(_ORIGINAL_POPEN):
+        def __init__(self, *args, **kwargs):
+            creationflags = int(kwargs.get("creationflags", 0) or 0)
+            # Do not combine mutually exclusive caller-requested console modes.
+            explicit_console = creationflags & (
+                getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+                | getattr(subprocess, "DETACHED_PROCESS", 0)
+            )
+            if not explicit_console:
+                startupinfo = kwargs.get("startupinfo")
+                if startupinfo is None:
+                    startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+                kwargs["startupinfo"] = startupinfo
+                kwargs["creationflags"] = creationflags | subprocess.CREATE_NO_WINDOW
+            super().__init__(*args, **kwargs)
+
+    subprocess.Popen = HiddenPopen
+    _HIDDEN_SUBPROCESS_POLICY_INSTALLED = True
+
+
+def hidden_subprocess_kwargs() -> dict:
+    if os.name != "nt":
+        return {}
+    startup = subprocess.STARTUPINFO()
+    startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startup.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+    return {"startupinfo": startup, "creationflags": subprocess.CREATE_NO_WINDOW}
 
 
 @dataclass(frozen=True)
@@ -40,7 +80,7 @@ class TransformConfig:
     background_music_dir: str | None = None
     music_volume: float = 0.08
     keep_audio: bool = True
-    crf: int = 20
+    crf: int = 15
     preset: str = "medium"
     audio_bitrate: str = "192k"
     hardware_acceleration: str = "nvidia"
@@ -48,7 +88,7 @@ class TransformConfig:
 
 PRESETS = {
     "light": TransformConfig(crop_percent=1.0, brightness=0.005, contrast=1.005, saturation=1.01),
-    "medium": TransformConfig(crop_percent=2.0, mirror=True, speed=1.015, brightness=0.01, contrast=1.02, saturation=1.03, fade_seconds=0.25),
+    "medium": TransformConfig(crop_percent=2.0, mirror=False, speed=1.015, brightness=0.01, contrast=1.02, saturation=1.03, fade_seconds=0.25),
     "strong": TransformConfig(crop_percent=3.5, mirror=True, speed=1.03, brightness=0.02, contrast=1.04, saturation=1.06, color="#8bc34a", color_opacity=0.025, fade_seconds=0.4),
 }
 
@@ -69,7 +109,7 @@ def find_binary(name: str, explicit: str | None = None) -> str:
 
 
 def available_hardware_encoders(ffmpeg: str) -> set[str]:
-    result = subprocess.run([ffmpeg, "-hide_banner", "-encoders"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    result = subprocess.run([ffmpeg, "-hide_banner", "-encoders"], capture_output=True, text=True, encoding="utf-8", errors="replace", **hidden_subprocess_kwargs())
     text = result.stdout + result.stderr
     return {name for name in ("h264_nvenc", "h264_amf", "h264_qsv", "h264_videotoolbox") if name in text}
 
@@ -117,7 +157,7 @@ def video_encoder_label(mode: str) -> str:
 
 def probe_video(path: Path, ffprobe: str) -> dict:
     command = [ffprobe, "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)]
-    result = subprocess.run(command, check=True, capture_output=True, text=True, encoding="utf-8")
+    result = subprocess.run(command, check=True, capture_output=True, text=True, encoding="utf-8", **hidden_subprocess_kwargs())
     data = json.loads(result.stdout)
     video = next((s for s in data.get("streams", []) if s.get("codec_type") == "video"), None)
     if not video:
@@ -243,6 +283,8 @@ def load_config(preset: str, config_file: str | None, seed: int | None) -> Trans
 
 def collect_inputs(source: Path) -> list[Path]:
     if source.is_file():
+        if source.suffix.lower() not in VIDEO_SUFFIXES:
+            raise ValueError(f"不支持的视频格式: {source.suffix or '(无扩展名)'}")
         return [source]
     if source.is_dir():
         return sorted(p for p in source.iterdir() if p.is_file() and p.suffix.lower() in VIDEO_SUFFIXES)
@@ -268,6 +310,8 @@ def process(args: argparse.Namespace) -> int:
     ffmpeg = find_binary("ffmpeg", args.ffmpeg)
     ffprobe = find_binary("ffprobe", args.ffprobe)
     config = load_config(args.preset, args.config, args.seed)
+    if args.hardware_acceleration:
+        config = replace(config, hardware_acceleration=args.hardware_acceleration)
     requested_acceleration = config.hardware_acceleration
     resolved_acceleration = resolve_hardware_acceleration(ffmpeg, requested_acceleration)
     config = replace(config, hardware_acceleration=resolved_acceleration)
@@ -291,6 +335,8 @@ def process(args: argparse.Namespace) -> int:
     output_is_file = len(inputs) == 1 and output.suffix.lower() in VIDEO_SUFFIXES
     if not output_is_file:
         output.mkdir(parents=True, exist_ok=True)
+    else:
+        output.parent.mkdir(parents=True, exist_ok=True)
 
     for index, source in enumerate(inputs, 1):
         target = output if output_is_file else output / f"{source.stem}_local{source.suffix}"
@@ -300,6 +346,9 @@ def process(args: argparse.Namespace) -> int:
         per_file = replace(config)
         if args.seed is not None and len(inputs) > 1:
             per_file = load_config(args.preset, args.config, args.seed + index - 1)
+            if args.hardware_acceleration:
+                per_file = replace(per_file, hardware_acceleration=args.hardware_acceleration)
+            per_file = replace(per_file, hardware_acceleration=resolved_acceleration)
         music_seed = (args.seed + index - 1) if args.seed is not None else None
         per_file = choose_background_music(per_file, music_seed)
         command = build_command(source, target, info, per_file, ffmpeg)
@@ -310,13 +359,13 @@ def process(args: argparse.Namespace) -> int:
             print(subprocess.list2cmdline(command))
         else:
             try:
-                subprocess.run(command, check=True)
+                subprocess.run(command, check=True, **hidden_subprocess_kwargs())
             except subprocess.CalledProcessError:
                 if resolved_acceleration == "cpu":
                     raise
                 print("GPU 编码失败，自动回退到 CPU 重试…", file=sys.stderr)
                 fallback = build_command(source, target, info, replace(per_file, hardware_acceleration="cpu"), ffmpeg)
-                subprocess.run(fallback, check=True)
+                subprocess.run(fallback, check=True, **hidden_subprocess_kwargs())
     return 0
 
 
@@ -329,12 +378,14 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, help="加入可复现的轻微随机变化")
     parser.add_argument("--ffmpeg", help="ffmpeg 可执行文件路径")
     parser.add_argument("--ffprobe", help="ffprobe 可执行文件路径")
+    parser.add_argument("--hardware-acceleration", choices=("auto", "nvidia", "amd", "intel", "apple", "cpu"), help="覆盖配置文件中的硬件编码模式")
     parser.add_argument("--dry-run", action="store_true", help="仅打印命令，不执行")
     parser.add_argument("--input-list", help="JSON 文件路径数组；用于界面任意多选")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    install_hidden_subprocess_policy()
     try:
         return process(make_parser().parse_args(argv))
     except (FileNotFoundError, ValueError, json.JSONDecodeError, subprocess.CalledProcessError) as exc:

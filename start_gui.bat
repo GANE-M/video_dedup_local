@@ -1,3 +1,7 @@
 @echo off
 cd /d "%~dp0"
-start "" pythonw gui.py
+if exist ".venv-ocr\Scripts\pythonw.exe" (
+  start "" ".venv-ocr\Scripts\pythonw.exe" gui.py
+) else (
+  start "" pythonw gui.py
+)

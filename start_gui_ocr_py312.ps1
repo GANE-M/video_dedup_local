@@ -6,4 +6,4 @@ if (-not (Test-Path -LiteralPath $pythonw)) {
     throw "未找到 .venv-ocr。请先运行：py -3.12 -m venv .venv-ocr"
 }
 
-& $pythonw .\gui.py
+Start-Process -FilePath $pythonw -ArgumentList ".\gui.py" -WorkingDirectory $PSScriptRoot -WindowStyle Hidden

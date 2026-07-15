@@ -8,9 +8,9 @@
 
 双击 `start_gui.bat` 即可启动。界面支持任意多选视频或直接选择整个目录进行批量处理；也可以选择输出和背景音乐，并调整画面、时间、声音与输出质量参数。配置可以保存为 JSON 后重复使用。
 
-界面顶部的“并行任务”用于控制同时运行的完整任务组数量，默认 2。现在的任务粒度是“一个目录/一组多选文件 = 一个任务”：同一个目录里的视频会在该任务窗口内按顺序处理，不会把目录里的每个视频都拆成独立并发任务。每次点击“开始处理”都会弹出一个新的任务进度窗口，主窗口可以继续选择下一个目录并启动新任务。
+界面顶部的“并行任务”控制每个目录内部同时处理的视频数量和 GUI 同时运行的任务组数量，默认且最多为 5。“一个目录/一组多选文件”仍是一个独立任务窗口，但目录内的视频会并发处理。ASR 和 LLM 请求分别使用跨进程、跨文件夹的全局 5 槽位，避免多个任务叠加成 25 路请求。每次点击“开始处理”都会弹出新的任务进度窗口，主窗口可以继续启动下一个目录。500 条以内的单个视频字幕通常整段发送给 AI；超过 500 条时按每 500 条分批发送。初译采用稳定索引对象，模型若漏项会在当前任务内只补发缺失索引，不产生断点缓存文件。
 
-完整流水线顺序是“自动字幕处理 → 视频去重处理 → 写入成片”。字幕会先从原始视频中提取/识别并翻译，再根据裁剪、变速参数校正时间轴，最后写入去重后的视频，避免去重变换影响字幕识别或导致字幕偏移。
+目录任务的完整流水线顺序是“并发字幕提取与初译 → 每集完整语义审核 → 全剧实体一致性审核 → 并发视频去重与字幕写入”。字幕会先从原始视频中提取/识别并翻译，待同一目录全部视频准备完毕后统一人物、家族、地点和称谓，再根据裁剪、变速参数校正时间轴并写入成片，避免去重变换影响字幕识别或导致字幕偏移。
 
 ## 快速使用
 
@@ -43,7 +43,7 @@ python .\video_dedup.py input.mp4 output.mp4 --dry-run
 ## 预设
 
 - `light`：轻微裁边和色彩调整。
-- `medium`：增加镜像、轻微变速和淡入淡出。
+- `medium`：默认不镜像，使用轻微变速和淡入淡出。
 - `strong`：更明显的裁边、色彩叠加和速度变化。
 
 ## GPU 加速
@@ -51,6 +51,10 @@ python .\video_dedup.py input.mp4 output.mp4 --dry-run
 界面的“输出质量”页可选择 `auto / nvidia / amd / intel / apple / cpu`。默认 `nvidia` 会直接使用 NVIDIA NVENC；Mac 选择 `apple` 使用 VideoToolbox；选择 `auto` 时会自动检测可用硬件编码器。画面滤镜仍可能在 CPU 执行，最终视频编码优先由 GPU/硬件编码器完成。
 
 ## 字幕处理
+
+每次启用字幕流水线时，程序会在 `logs/translation-records/<运行时间-进程号>/` 下为每个视频保存一份 UTF-8 JSON 诊断记录，并额外保存 `series-consistency.json`。记录包含 OCR/软字幕原文、ASR 原文、清洗文本、置信分、初译、整集审核报告、终稿、全剧实体统一决策及失败信息，不包含 API Key。记录采用阶段性原子写入，因此翻译或后续编码中途失败时也能保留已经完成的分析数据。可用 `--translation-log-dir` 改变记录根目录。
+
+题材术语表默认放在项目根目录的 `glossaries/`。GUI 会扫描其中除 `template_*.json` 外的 JSON 文件，并在目标语言旁提供手动选择和刷新按钮；默认不使用术语表。选中的术语表会同时注入初译和整集审核 Prompt，并写入翻译诊断记录。当前内置 `chinese_history_zh_en_ar.json`（中国历史/古装，中英阿三语），可复制模板继续增加现代商战、医疗、法律等题材。命令行可使用 `--glossary-file <json路径>`；Docker GUI 会把所选文件临时映射进容器，无需重新构建镜像。
 
 界面新增“字幕”页，支持自动字幕流水线：
 
@@ -63,6 +67,7 @@ python .\video_dedup.py input.mp4 output.mp4 --dry-run
 - 两种烧录形式：
   - `双语字幕`：不遮住原字幕，新字幕自动放在顶部，避免贴着旧字幕导致换行重叠。
   - `覆盖原字幕`：优先用 OCR 自动识别原字幕区域，再用白色半透明蒙版遮住旧字幕并叠加新字幕；OCR 不可用或识别失败时回退到手动百分比参数。
+- 字幕页支持滚动，并提供可折叠的“字幕区域预览”：可用当前第一个视频或手动选择视频随机抽帧，用滑块或拖动画面方框校准白色蒙版位置。
 
 GUI 里需要填写 API Key、接口地址和模型名。DeepSeek/OpenAI-compatible 接口均可；如果使用 DeepSeek V4 Flash，请把模型名填成 DeepSeek 后台显示的准确模型 ID。
 
@@ -91,10 +96,10 @@ python .\subtitle_tool.py render "D:\video\input.mp4" "D:\video\input_en.srt" "D
 python .\subtitle_tool.py translate "D:\video\input.srt" "D:\video\input_en.srt" --provider openai-compatible --target-language English
 ```
 
-LLM 翻译支持字幕批次并发，默认 3 路：
+LLM 翻译默认按视频整段发送；当单个视频超过 500 条字幕时，自动按每 500 条分批发送。`--parallel-batches` 仅为兼容旧命令保留：
 
 ```powershell
-python .\subtitle_tool.py translate "D:\video\input.srt" "D:\video\input_en.srt" --provider openai-compatible --target-language English --parallel-batches 3
+python .\subtitle_tool.py translate "D:\video\input.srt" "D:\video\input_en.srt" --provider openai-compatible --target-language English
 ```
 
 硬字幕不能被真正删除；工具采用“遮盖旧字幕区域 + 烧录新字幕”的方式实现视觉替换。无字幕视频可通过 Faster-Whisper 先生成字幕。
@@ -105,6 +110,15 @@ python .\subtitle_tool.py translate "D:\video\input.srt" "D:\video\input_en.srt"
 pip install paddleocr paddlepaddle pillow
 pip install easyocr
 ```
+
+NVIDIA 显卡可把中文/英文 PaddleOCR 改为 CUDA 版。Windows + Python 3.12 示例（CUDA 12.9）：
+
+```powershell
+.\.venv-ocr\Scripts\python.exe -m pip uninstall -y paddlepaddle
+.\.venv-ocr\Scripts\python.exe -m pip install paddlepaddle-gpu==3.3.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu129/
+```
+
+界面中的“OCR设备”选“自动”会优先使用 `gpu:0`，不可用时回退 CPU；选 `cuda` 则要求 CUDA 必须可用。应用会自动注册 pip 安装在虚拟环境中的 cuBLAS/cuDNN DLL，无需修改系统 PATH。
 
 只有需要“无字幕视频语音识别”时，才安装：
 
@@ -118,6 +132,12 @@ pip install faster-whisper
 python .\subtitle_tool.py transcribe "D:\video\input.mp4" "D:\video\input_asr.srt" --device cuda --model-size medium
 ```
 
+Faster-Whisper 使用 CTranslate2；`--device cuda` 会使用 NVIDIA CUDA + float16，`--device auto` 会优先 CUDA、不可用时回退 CPU int8。
+
+自动双源流水线会启用 Whisper 单词级时间戳，并在本地把单词分配到对应 OCR/软字幕时间段；不会再用较长 ASR 段扩大 OCR 字幕时间。同语言双源使用文本一致度、ASR 单词置信度、视觉文本洁净度和时间匹配质量评分；跨语言双源不比较字符相似度，改用视觉文本质量、ASR 置信度、时间匹配和 OCR 持续稳定性评分。启用智能审核后，主模型先翻译全部字幕，审核模型再读取整集有序上下文；置信阈值（默认 `0.82`）只标记风险，不再让高置信字幕绕过审核。单源和双源审核都只返回需要修改的稳定索引操作（替换、删除、合并），本地会限制总修改比例、删除数量和持续时间；合并只允许连续 2-8 条且最多覆盖 6 秒。全部视频翻译完成后，程序使用各集审核模型发现的实体证据做一次全剧一致性审核。每项改名必须引用至少两集真实存在的字幕索引，本地确认对应行确实出现旧名或规范名，并拒绝冲突、反向和链式替换；应用后会同步更新单集 JSON 终稿记录。任何额外审核失败都会保留上一阶段终稿继续处理。
+
+Ruta 暂未提供 V4 Pro 时，主模型和审核模型都可填写 `deepseek-v4-flash`；以后只需把“审核模型”改为 `deepseek-v4-pro`。
+
 自动估计硬字幕遮盖区域：
 
 ```powershell
@@ -130,7 +150,7 @@ python .\subtitle_tool.py detect-region "D:\video\input.mp4"
 
 如果不想在本机 Python 3.14 环境里安装 Whisper，可以用 Docker。Docker 内部使用独立 Python 3.11，不会影响系统 Python，也不会影响 GUI 里的其他功能。
 
-GUI 也支持 Docker OCR 后端：字幕页里选择 `Docker OCR` 后，点击“开始处理”会临时启动一个容器；任务完成后容器自动退出，不需要常驻后端。只需要 Docker Desktop 本身处于运行状态。
+GUI 默认使用本机 Python 3.12 OCR 环境，也支持 Docker OCR 后端：字幕页里选择 `Docker OCR` 后，点击“开始处理”会临时启动一个容器；任务完成后容器自动退出，不需要常驻后端。只需要 Docker Desktop 本身处于运行状态。
 
 首次使用硬字幕 OCR 前先构建镜像：
 

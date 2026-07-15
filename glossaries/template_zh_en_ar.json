@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "id": "replace_with_unique_id",
+  "name": "新题材术语表（中英阿）",
+  "genre": "填写题材",
+  "description": "说明此术语表适用的剧集类型和时代背景。",
+  "languages": ["zh", "en", "ar"],
+  "instructions": [
+    "只在上下文符合本题材时采用词条。",
+    "同一视频中的人物名、称谓和组织名称保持一致。"
+  ],
+  "terms": [
+    {
+      "zh": "示例词",
+      "en": "example term",
+      "ar": "مصطلح تجريبي",
+      "aliases": {
+        "zh": [],
+        "en": [],
+        "ar": []
+      },
+      "note": "说明适用语境；如存在多义词必须写清楚。"
+    }
+  ]
+}

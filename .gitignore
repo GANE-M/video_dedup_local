@@ -30,3 +30,5 @@ processed/
 *.temp
 
 config.local.json
+.video_tool_state.json
+logs/
