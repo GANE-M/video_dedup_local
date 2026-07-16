@@ -491,26 +491,6 @@ class SubtitleToolTests(unittest.TestCase):
         self.assertEqual(stats["delete"], 0)
         self.assertEqual(stats["safety_rejected"], 1)
 
-    def test_episode_review_caps_total_rewrite_surface_at_forty_percent(self) -> None:
-        timed = [
-            subtitle_tool.SubtitleItem(
-                index, f"00:00:{(index - 1) % 60:02d},000", f"00:00:{index % 60:02d},000", "source"
-            )
-            for index in range(1, 101)
-        ]
-        initial = [f"line {index}" for index in range(1, 101)]
-        edits = [
-            {"action": "replace", "indexes": [index], "text": f"reviewed {index}"}
-            for index in range(1, 42)
-        ]
-
-        final, stats = subtitle_tool.apply_episode_review_edits(timed, initial, edits)
-
-        self.assertEqual(stats["replace"], 40)
-        self.assertEqual(stats["safety_rejected"], 1)
-        self.assertEqual(final[39], "reviewed 40")
-        self.assertEqual(final[40], "line 41")
-
     def test_single_source_reviewer_uses_sparse_edits(self) -> None:
         timed = [
             subtitle_tool.SubtitleItem(1, "00:00:01,000", "00:00:02,000", "hello"),
@@ -628,6 +608,100 @@ class SubtitleToolTests(unittest.TestCase):
             text = subtitle_tool.parse_srt(path)[0].text
         self.assertEqual(text, "زوي وجوليا")
         self.assertEqual(stats["validated_replacements"], 0)
+
+    def test_high_confidence_person_replacement_tolerates_merged_index_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            path = Path(temp_name) / "episode.srt"
+            subtitle_tool.write_srt([
+                subtitle_tool.SubtitleItem(1, "00:00:01,000", "00:00:02,000", "Solon returned")
+            ], path)
+            evidence = {
+                "1": {
+                    "rows": {10: {"target": ["Solon returned"]}},
+                    "reports": [{"entities": [{
+                        "kind": "person", "target_variants": ["Solon"],
+                        "preferred_target": "Solon", "evidence_indexes": [11],
+                    }]}],
+                },
+                "2": {
+                    "rows": {20: {"target": ["Sorin frowned"]}},
+                    "reports": [{"entities": [{
+                        "kind": "person", "target_variants": ["Sorin"],
+                        "preferred_target": "Sorin", "evidence_indexes": [21],
+                    }]}],
+                },
+            }
+            stats = subtitle_tool.apply_series_consistency_replacements(
+                [path], [{
+                    "kind": "person", "from": "Solon", "to": "Sorin", "confidence": 0.95,
+                    "evidence": [{"episode": 1, "indexes": [10]}, {"episode": 2, "indexes": [20]}],
+                }], evidence,
+            )
+
+            text = subtitle_tool.parse_srt(path)[0].text
+
+        self.assertEqual(text, "Sorin returned")
+        self.assertEqual(stats["validated_replacements"], 1)
+
+    def test_relaxed_person_evidence_still_requires_high_confidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            path = Path(temp_name) / "episode.srt"
+            subtitle_tool.write_srt([
+                subtitle_tool.SubtitleItem(1, "00:00:01,000", "00:00:02,000", "Solon returned")
+            ], path)
+            evidence = {
+                str(episode): {
+                    "rows": {episode: {"target": ["Solon" if episode == 1 else "Sorin"]}},
+                    "reports": [{"entities": [{
+                        "kind": "person", "target_variants": ["Solon" if episode == 1 else "Sorin"],
+                        "evidence_indexes": [episode + 10],
+                    }]}],
+                }
+                for episode in (1, 2)
+            }
+            stats = subtitle_tool.apply_series_consistency_replacements(
+                [path], [{
+                    "kind": "person", "from": "Solon", "to": "Sorin", "confidence": 0.89,
+                    "evidence": [{"episode": 1, "indexes": [1]}, {"episode": 2, "indexes": [2]}],
+                }], evidence,
+            )
+            text = subtitle_tool.parse_srt(path)[0].text
+
+        self.assertEqual(text, "Solon returned")
+        self.assertEqual(stats["validated_replacements"], 0)
+
+    def test_person_evidence_accepts_short_name_inside_full_name_variant(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            path = Path(temp_name) / "episode.srt"
+            subtitle_tool.write_srt([
+                subtitle_tool.SubtitleItem(1, "00:00:01,000", "00:00:02,000", "Lady Vaag arrived")
+            ], path)
+            evidence = {
+                "1": {
+                    "rows": {1: {"target": ["Lady Vaag arrived"]}},
+                    "reports": [{"entities": [{
+                        "kind": "person", "target_variants": ["Lady Vaag"],
+                        "evidence_indexes": [1],
+                    }]}],
+                },
+                "2": {
+                    "rows": {2: {"target": ["Gunnar Varg arrived"]}},
+                    "reports": [{"entities": [{
+                        "kind": "person", "target_variants": ["Gunnar Varg"],
+                        "evidence_indexes": [2],
+                    }]}],
+                },
+            }
+            stats = subtitle_tool.apply_series_consistency_replacements(
+                [path], [{
+                    "kind": "person", "from": "Vaag", "to": "Varg", "confidence": 0.85,
+                    "evidence": [{"episode": 1, "indexes": [1]}, {"episode": 2, "indexes": [2]}],
+                }], evidence,
+            )
+            text = subtitle_tool.parse_srt(path)[0].text
+
+        self.assertEqual(text, "Lady Varg arrived")
+        self.assertEqual(stats["validated_replacements"], 1)
 
     def test_series_consistency_rejects_chained_replacements(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:

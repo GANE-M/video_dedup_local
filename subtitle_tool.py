@@ -388,6 +388,32 @@ def validate_series_consistency_replacements(
             if episode is None or not isinstance(indexes, list) or not indexes:
                 evidence_valid = False
                 break
+            episode_entity_support = False
+            for report in episode.get("reports", []):
+                for entity in report.get("entities", []):
+                    if not isinstance(entity, dict) or str(entity.get("kind", "")).strip().casefold() != kind:
+                        continue
+                    variants = [
+                        clean_translated_text(str(value))
+                        for value in entity.get("target_variants", [])
+                    ]
+                    preferred = clean_translated_text(str(entity.get("preferred_target", "")))
+                    if preferred:
+                        variants.append(preferred)
+                    if any(
+                        value and (
+                            value.casefold() in {old.casefold(), new.casefold()}
+                            or _contains_entity(value, old)
+                            or _contains_entity(value, new)
+                            or _contains_entity(old, value)
+                            or _contains_entity(new, value)
+                        )
+                        for value in variants
+                    ):
+                        episode_entity_support = True
+                        break
+                if episode_entity_support:
+                    break
             for raw_index in indexes:
                 try:
                     evidence_index = int(raw_index)
@@ -416,13 +442,27 @@ def validate_series_consistency_replacements(
                         if preferred:
                             variants.append(preferred)
                         if evidence_index in entity_indexes and any(
-                            value.casefold() in {old.casefold(), new.casefold()} for value in variants if value
+                            value and (
+                                value.casefold() in {old.casefold(), new.casefold()}
+                                or _contains_entity(value, old)
+                                or _contains_entity(value, new)
+                                or _contains_entity(old, value)
+                                or _contains_entity(new, value)
+                            )
+                            for value in variants
                         ):
                             entity_support = True
                             break
                     if entity_support:
                         break
-                if not entity_support:
+                # High-confidence person names may use an episode-level entity
+                # match when merge operations shifted the exact evidence index.
+                # The cited row must still exist and contain old/new, and two
+                # separate episodes are still mandatory below.
+                relaxed_person_support = (
+                    kind == "person" and confidence >= 0.90 and episode_entity_support
+                )
+                if not entity_support and not relaxed_person_support:
                     evidence_valid = False
                     break
             if not evidence_valid:
@@ -563,9 +603,8 @@ def apply_episode_review_edits(
     # Initial translation should already be usable. The reviewer is a repair
     # layer, so a response trying to rewrite most of an episode is unsafe.
     # Allow one short fragment group even in a tiny test/clip, while long
-    # episodes still cap the reviewer's total rewrite surface at about 40%.
-    # This is deliberately independent from the stricter deletion limits below.
-    max_affected_items = max(8, (total_items * 40 + 99) // 100)
+    # episodes still cap the reviewer's total rewrite surface at about 35%.
+    max_affected_items = max(8, (total_items * 35 + 99) // 100)
     max_deleted_items = max(1, (total_items + 7) // 8)  # at most about 12.5%
     episode_start = min(srt_time_to_seconds(item.start) for item in timed_items)
     episode_end = max(srt_time_to_seconds(item.end) for item in timed_items)
