@@ -296,23 +296,38 @@ def prepare_video_subtitles(
     }
     log(f"翻译诊断记录: {translation_record_path}")
     log("[翻译阶段 1/2] 获取字幕来源")
-    sources = make_subtitle_sources(
-        input_video,
-        visual_srt,
-        asr_srt,
-        args.subtitle_source,
-        resolved_ocr_language(args.ocr_language, args.source_language),
-        args.source_language,
-        args.whisper_model,
-        args.whisper_device,
-        ffmpeg,
-        ffprobe,
-        args.ocr_timeout_seconds,
-        args.asr_timeout_seconds,
-        progress,
-        ocr_device=args.ocr_device,
-        global_asr_workers=getattr(args, "global_asr_workers", 5),
-    )
+    sources = None
+    for source_attempt in range(1, 4):
+        try:
+            sources = make_subtitle_sources(
+                input_video,
+                visual_srt,
+                asr_srt,
+                args.subtitle_source,
+                resolved_ocr_language(args.ocr_language, args.source_language),
+                args.source_language,
+                args.whisper_model,
+                args.whisper_device,
+                ffmpeg,
+                ffprobe,
+                args.ocr_timeout_seconds,
+                args.asr_timeout_seconds,
+                progress,
+                ocr_device=args.ocr_device,
+                global_asr_workers=getattr(args, "global_asr_workers", 5),
+            )
+            break
+        except RuntimeError as exc:
+            if "OCR 与音频 ASR 均失败" not in str(exc) or source_attempt >= 3:
+                raise
+            delay = 2 ** source_attempt
+            log(f"OCR 与 ASR 同时失败，{delay} 秒后重新执行字幕来源阶段 ({source_attempt}/3)")
+            visual_srt.unlink(missing_ok=True)
+            asr_srt.unlink(missing_ok=True)
+            asr_srt.with_suffix(".words.json").unlink(missing_ok=True)
+            time.sleep(delay)
+    if sources is None:
+        raise RuntimeError("字幕来源阶段未返回结果")
     log(f"[翻译阶段 1/2] 完成，来源={'+'.join(sources)}")
     visual_kind = "soft" if "soft" in sources else "ocr"
     visual_path = sources.get("soft") or sources.get("ocr")

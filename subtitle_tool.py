@@ -1140,12 +1140,16 @@ def fetch_chat_completion_json_with_slot(
     api_key: str,
     timeout_seconds: int,
     label: str,
+    slot_limit: int | None = None,
 ) -> dict:
     """Send one request while respecting the machine-wide LLM concurrency cap."""
-    try:
-        limit = max(1, int(os.environ.get("VIDEO_DEDUP_GLOBAL_LLM_WORKERS", "5")))
-    except ValueError:
-        limit = 5
+    if slot_limit is None:
+        try:
+            limit = max(1, int(os.environ.get("VIDEO_DEDUP_GLOBAL_LLM_WORKERS", "5")))
+        except ValueError:
+            limit = 5
+    else:
+        limit = max(1, int(slot_limit))
     with global_llm_slot(limit, label):
         return fetch_chat_completion_json(url, request_data, api_key, timeout_seconds)
 
@@ -1672,6 +1676,49 @@ def _parse_indexed_translation_content(
     return parsed
 
 
+def _recover_complete_indexed_translation_rows(
+    content: str,
+    requested_indexes: list[int],
+) -> dict[int, str]:
+    """Recover only fully formed row objects from a truncated translations array."""
+    marker = re.search(r'"translations"\s*:\s*\[', content)
+    if not marker:
+        return {}
+    allowed = set(requested_indexes)
+    decoder = json.JSONDecoder()
+    position = marker.end()
+    recovered: dict[int, str] = {}
+    while position < len(content):
+        while position < len(content) and (content[position].isspace() or content[position] == ","):
+            position += 1
+        if position >= len(content) or content[position] == "]":
+            break
+        if content[position] != "{":
+            break
+        try:
+            row, end_position = decoder.raw_decode(content, position)
+        except json.JSONDecodeError:
+            # The first object that cannot be decoded is the truncated tail.
+            # Never keep a half-written subtitle or scan beyond it.
+            break
+        if not isinstance(row, dict):
+            break
+        try:
+            index = int(row.get("index"))
+        except (TypeError, ValueError):
+            break
+        text = row.get("text")
+        if not isinstance(text, str):
+            break
+        if index in recovered:
+            # Ambiguous duplicate rows are not safe to salvage.
+            return {}
+        if index in allowed:
+            recovered[index] = clean_translated_text(text)
+        position = end_position
+    return recovered
+
+
 def chat_indexed_translations_openai_compatible(
     *,
     prompt: str,
@@ -1689,90 +1736,123 @@ def chat_indexed_translations_openai_compatible(
     base_url = (os.environ.get("OPENAI_BASE_URL") or "https://theruta.ai/api/v1/chat/completions").rstrip("/")
     url = base_url if base_url.endswith("/chat/completions") else f"{base_url}/chat/completions"
     timeout_seconds = int(os.environ.get("LLM_TIMEOUT_SECONDS", "600"))
-    max_attempts = int(os.environ.get("LLM_MAX_ATTEMPTS", "3"))
+    # One semantic request per recovery round by default: at most three paid
+    # requests for one translation job. Operators may still opt into extra
+    # transport attempts explicitly through LLM_MAX_ATTEMPTS.
+    max_attempts = max(1, int(os.environ.get("LLM_MAX_ATTEMPTS", "1")))
+    max_rounds = max(1, int(os.environ.get("LLM_TRANSLATION_ROUNDS", "3")))
     max_tokens = max(1024, int(os.environ.get("LLM_MAX_OUTPUT_TOKENS", "8192")))
     collected: dict[int, str] = {}
     print(f"{log_label}请求: model={model}, endpoint={url}, items={len(item_indexes)}, indexed=yes")
-
-    for attempt in range(1, max_attempts + 1):
+    last_error: Exception | None = None
+    for round_number in range(1, max_rounds + 1):
         missing = [index for index in item_indexes if index not in collected]
         if not missing:
             break
-        attempt_payload = dict(user_payload)
-        attempt_payload.update(
-            {
-                "expected_count": len(item_indexes),
-                "requested_indexes": missing,
-                "expected_return_count": len(missing),
-                "output_format": {"translations": [{"index": missing[0], "text": "translated subtitle"}]},
-            }
-        )
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": json.dumps(attempt_payload, ensure_ascii=False)},
-            ],
-            "temperature": 0.1,
-            "max_tokens": max_tokens,
-        }
-        request_data = json.dumps(payload, ensure_ascii=True).encode("utf-8")
-        started = time.perf_counter()
-        try:
+        if round_number > 1:
+            delay = min(30, 5 * (2 ** (round_number - 2)))
             print(
-                f"{log_label}尝试 {attempt}/{max_attempts}，待返回 {len(missing)} 条，"
-                f"超时 {timeout_seconds} 秒"
+                f"{log_label}开启初译回退轮次 {round_number}/{max_rounds}，仍缺 {len(missing)} 条；"
+                f"等待 {delay} 秒并将重试请求限制为全局 2 并发。"
             )
-            data = fetch_chat_completion_json_with_slot(url, request_data, api_key, timeout_seconds, log_label)
-            print(f"{log_label}返回，用时 {time.perf_counter() - started:.1f} 秒")
-            try:
-                content = data["choices"][0]["message"]["content"].strip()
-            except (KeyError, IndexError, TypeError, AttributeError) as exc:
-                safe_preview = json.dumps(data, ensure_ascii=False)[:500]
-                raise RuntimeError(f"返回格式无效: {safe_preview}") from exc
-            if not content:
-                raise RuntimeError("返回了空内容")
-            parsed = _parse_indexed_translation_content(content, missing)
-            collected.update(parsed)
-            remaining = [index for index in item_indexes if index not in collected]
-            if remaining:
-                print(
-                    f"{log_label}本轮收到 {len(parsed)} 条，仍缺 {len(remaining)} 条；"
-                    f"将只补发缺失索引: {remaining[:20]}{'...' if len(remaining) > 20 else ''}"
-                )
-            else:
-                print(f"{log_label}成功: items={len(collected)}, indexed=yes")
+            time.sleep(delay)
+
+        for attempt in range(1, max_attempts + 1):
+            missing = [index for index in item_indexes if index not in collected]
+            if not missing:
                 break
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            retryable = exc.code in {403, 408, 409, 429, 500, 502, 503, 504}
-            if not retryable or attempt >= max_attempts:
-                raise RuntimeError(f"{log_label}失败: HTTP {exc.code} {body}") from exc
-            print(f"{log_label}HTTP {exc.code}，准备重试。")
-        except urllib.error.URLError as exc:
-            if attempt >= max_attempts:
-                raise RuntimeError(f"{log_label}连接失败: {exc}") from exc
-            print(f"{log_label}连接失败，准备重试: {exc}")
-        except (http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError, ssl.SSLError) as exc:
-            if attempt >= max_attempts:
-                raise RuntimeError(f"{log_label}远端连接中断: {exc}") from exc
-            print(f"{log_label}远端连接中断，准备重试: {exc}")
-        except (TimeoutError, socket.timeout) as exc:
-            if attempt >= max_attempts:
-                raise RuntimeError(f"{log_label}读取超时: {timeout_seconds} 秒") from exc
-            print(f"{log_label}读取超时，准备重试。")
-        except (RuntimeError, json.JSONDecodeError) as exc:
-            if attempt >= max_attempts:
-                raise RuntimeError(f"{log_label}返回内容连续不可用: {exc}") from exc
-            print(f"{log_label}返回内容不可用，准备重试 ({attempt}/{max_attempts}): {exc}")
-        if attempt < max_attempts:
-            time.sleep(2 ** attempt)
+            attempt_payload = dict(user_payload)
+            attempt_payload.update(
+                {
+                    "expected_count": len(item_indexes),
+                    "requested_indexes": missing,
+                    "expected_return_count": len(missing),
+                    "output_format": {"translations": [{"index": missing[0], "text": "translated subtitle"}]},
+                }
+            )
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": json.dumps(attempt_payload, ensure_ascii=False)},
+                ],
+                "temperature": 0.1,
+                "max_tokens": max_tokens,
+            }
+            request_data = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+            started = time.perf_counter()
+            try:
+                print(
+                    f"{log_label}轮次 {round_number}/{max_rounds}，尝试 {attempt}/{max_attempts}，"
+                    f"待返回 {len(missing)} 条，超时 {timeout_seconds} 秒"
+                )
+                retry_slot_limit = 2 if round_number > 1 else None
+                data = fetch_chat_completion_json_with_slot(
+                    url, request_data, api_key, timeout_seconds, log_label, retry_slot_limit
+                )
+                print(f"{log_label}返回，用时 {time.perf_counter() - started:.1f} 秒")
+                try:
+                    content = data["choices"][0]["message"]["content"].strip()
+                except (KeyError, IndexError, TypeError, AttributeError) as exc:
+                    safe_preview = json.dumps(data, ensure_ascii=False)[:500]
+                    raise RuntimeError(f"返回格式无效: {safe_preview}") from exc
+                if not content:
+                    raise RuntimeError("返回了空内容")
+                try:
+                    parsed = _parse_indexed_translation_content(content, missing)
+                except RuntimeError as exc:
+                    recovered = _recover_complete_indexed_translation_rows(content, missing)
+                    if not recovered:
+                        raise
+                    parsed = recovered
+                    print(
+                        f"{log_label}响应 JSON 截断，已安全抢救 {len(recovered)} 条完整索引；"
+                        "截断中的半条字幕已丢弃。"
+                    )
+                    last_error = exc
+                collected.update(parsed)
+                remaining = [index for index in item_indexes if index not in collected]
+                if remaining:
+                    print(
+                        f"{log_label}本轮收到 {len(parsed)} 条，仍缺 {len(remaining)} 条；"
+                        f"将携带完整源上下文只补发缺失索引: {remaining[:20]}{'...' if len(remaining) > 20 else ''}"
+                    )
+                else:
+                    print(f"{log_label}成功: items={len(collected)}, indexed=yes")
+                    break
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace")
+                retryable = exc.code in {403, 408, 409, 429, 500, 502, 503, 504}
+                if not retryable:
+                    raise RuntimeError(f"{log_label}失败: HTTP {exc.code} {body}") from exc
+                last_error = RuntimeError(f"HTTP {exc.code} {body}")
+                print(f"{log_label}HTTP {exc.code}，准备重试。")
+            except urllib.error.URLError as exc:
+                last_error = exc
+                print(f"{log_label}连接失败，准备重试: {exc}")
+            except (http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError, ssl.SSLError) as exc:
+                last_error = exc
+                print(f"{log_label}远端连接中断，准备重试: {exc}")
+            except (TimeoutError, socket.timeout) as exc:
+                last_error = exc
+                print(f"{log_label}读取超时，准备重试。")
+            except (RuntimeError, json.JSONDecodeError) as exc:
+                last_error = exc
+                print(
+                    f"{log_label}返回内容不可用，准备重试 "
+                    f"(轮次 {round_number}/{max_rounds}，尝试 {attempt}/{max_attempts}): {exc}"
+                )
+            if attempt < max_attempts:
+                time.sleep(2 ** attempt)
+
+        if collected and len(collected) < len(item_indexes):
+            print(f"{log_label}当前任务内已累计保存 {len(collected)}/{len(item_indexes)} 条完整译文。")
 
     missing = [index for index in item_indexes if index not in collected]
     if missing:
         raise RuntimeError(
-            f"{log_label}补发后仍缺少 {len(missing)} 条字幕，索引: "
-            f"{missing[:30]}{'...' if len(missing) > 30 else ''}"
+            f"{log_label}经过 {max_rounds} 轮初译后仍缺少 {len(missing)} 条字幕，索引: "
+            f"{missing[:30]}{'...' if len(missing) > 30 else ''}；最后错误: {last_error}"
         )
     return [collected[index] for index in item_indexes]
 

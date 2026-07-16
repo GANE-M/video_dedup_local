@@ -24,6 +24,19 @@ class SubtitleToolTests(unittest.TestCase):
         slot.assert_called_once_with(5, "AI 测试")
         fetch.assert_called_once()
 
+    def test_llm_http_request_can_use_smaller_retry_slot_pool(self) -> None:
+        lease = mock.MagicMock()
+        lease.__enter__.return_value = 1
+        with (
+            mock.patch.object(subtitle_tool, "global_llm_slot", return_value=lease) as slot,
+            mock.patch.object(subtitle_tool, "fetch_chat_completion_json", return_value={"ok": True}),
+        ):
+            result = subtitle_tool.fetch_chat_completion_json_with_slot(
+                "https://example.invalid", b"{}", "key", 30, "AI retry", slot_limit=2
+            )
+        self.assertEqual(result, {"ok": True})
+        slot.assert_called_once_with(2, "AI retry")
+
     def test_chinese_history_glossary_loads_and_builds_prompt(self) -> None:
         glossary = subtitle_tool.load_glossary_file(
             Path(__file__).with_name("glossaries") / "chinese_history_zh_en_ar.json"
@@ -122,7 +135,7 @@ class SubtitleToolTests(unittest.TestCase):
 
     def test_indexed_translation_retries_malformed_json(self) -> None:
         responses = [
-            {"choices": [{"message": {"content": '{"translations":[{"index":1,"text":"broken"}'}}]},
+            {"choices": [{"message": {"content": '{"translations":[{"index":1,"text":"brok'}}]},
             {"choices": [{"message": {"content": json.dumps({"translations": [{"index": 1, "text": "fixed"}]})}}]},
         ]
         with (
@@ -136,6 +149,71 @@ class SubtitleToolTests(unittest.TestCase):
             )
         self.assertEqual(result, ["fixed"])
         self.assertEqual(fetch.call_count, 2)
+
+    def test_indexed_translation_salvages_complete_rows_and_keeps_full_context(self) -> None:
+        requests = []
+        responses = [
+            {"choices": [{"message": {"content": (
+                '{"translations":['
+                '{"index":1,"text":"one"},'
+                '{"index":2,"text":"two"},'
+                '{"index":3,"text":"thr'
+            )}}]},
+            {"choices": [{"message": {"content": json.dumps({
+                "translations": [{"index": 3, "text": "three"}]
+            })}}]},
+        ]
+
+        def fake_fetch(_url, request_data, _api_key, _timeout_seconds):
+            payload = json.loads(request_data.decode("utf-8"))
+            user = json.loads(payload["messages"][1]["content"])
+            requests.append((user["requested_indexes"], user["items"]))
+            return responses[len(requests) - 1]
+
+        full_items = [{"index": 1, "source": "a"}, {"index": 2, "source": "b"}, {"index": 3, "source": "c"}]
+        with (
+            mock.patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}, clear=False),
+            mock.patch.object(subtitle_tool, "fetch_chat_completion_json", side_effect=fake_fetch),
+            mock.patch.object(subtitle_tool.time, "sleep"),
+        ):
+            result = subtitle_tool.chat_indexed_translations_openai_compatible(
+                prompt="Return indexed JSON.", user_payload={"items": full_items},
+                model="model", item_indexes=[1, 2, 3], log_label="AI test",
+            )
+
+        self.assertEqual(result, ["one", "two", "three"])
+        self.assertEqual([request[0] for request in requests], [[1, 2, 3], [3]])
+        self.assertEqual(requests[0][1], full_items)
+        self.assertEqual(requests[1][1], full_items)
+
+    def test_indexed_translation_starts_recovery_round_after_empty_first_round(self) -> None:
+        responses = [
+            {"choices": [{"message": {"content": ""}}]},
+            {"choices": [{"message": {"content": json.dumps({
+                "translations": [{"index": 1, "text": "fixed"}]
+            })}}]},
+        ]
+        lease = mock.MagicMock()
+        lease.__enter__.return_value = 1
+        with (
+            mock.patch.dict("os.environ", {
+                "OPENAI_API_KEY": "test-key",
+                "LLM_MAX_ATTEMPTS": "1",
+                "LLM_TRANSLATION_ROUNDS": "2",
+            }, clear=False),
+            mock.patch.object(subtitle_tool, "fetch_chat_completion_json", side_effect=responses),
+            mock.patch.object(subtitle_tool, "global_llm_slot", return_value=lease) as slot,
+            mock.patch.object(subtitle_tool.time, "sleep") as sleep,
+        ):
+            result = subtitle_tool.chat_indexed_translations_openai_compatible(
+                prompt="Return indexed JSON.", user_payload={"items": [{"index": 1}]},
+                model="model", item_indexes=[1], log_label="AI test",
+            )
+
+        self.assertEqual(result, ["fixed"])
+        self.assertEqual(slot.call_args_list[0].args[0], 5)
+        self.assertEqual(slot.call_args_list[1].args[0], 2)
+        sleep.assert_called_once_with(5)
 
     def test_indexed_translation_rejects_duplicate_index(self) -> None:
         content = json.dumps({"translations": [
@@ -660,6 +738,7 @@ class SubtitleToolTests(unittest.TestCase):
         with (
             mock.patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}, clear=False),
             mock.patch("subtitle_tool.urllib.request.urlopen", return_value=response),
+            mock.patch.object(subtitle_tool.time, "sleep"),
         ):
             with self.assertRaisesRegex(RuntimeError, "返回格式无效"):
                 subtitle_tool.translate_texts_openai_compatible(["hello"], "English", "auto", "model")
