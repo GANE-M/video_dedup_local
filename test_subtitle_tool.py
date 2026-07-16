@@ -491,6 +491,26 @@ class SubtitleToolTests(unittest.TestCase):
         self.assertEqual(stats["delete"], 0)
         self.assertEqual(stats["safety_rejected"], 1)
 
+    def test_episode_review_caps_total_rewrite_surface_at_forty_percent(self) -> None:
+        timed = [
+            subtitle_tool.SubtitleItem(
+                index, f"00:00:{(index - 1) % 60:02d},000", f"00:00:{index % 60:02d},000", "source"
+            )
+            for index in range(1, 101)
+        ]
+        initial = [f"line {index}" for index in range(1, 101)]
+        edits = [
+            {"action": "replace", "indexes": [index], "text": f"reviewed {index}"}
+            for index in range(1, 42)
+        ]
+
+        final, stats = subtitle_tool.apply_episode_review_edits(timed, initial, edits)
+
+        self.assertEqual(stats["replace"], 40)
+        self.assertEqual(stats["safety_rejected"], 1)
+        self.assertEqual(final[39], "reviewed 40")
+        self.assertEqual(final[40], "line 41")
+
     def test_single_source_reviewer_uses_sparse_edits(self) -> None:
         timed = [
             subtitle_tool.SubtitleItem(1, "00:00:01,000", "00:00:02,000", "hello"),

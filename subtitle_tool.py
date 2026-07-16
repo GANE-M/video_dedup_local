@@ -563,8 +563,9 @@ def apply_episode_review_edits(
     # Initial translation should already be usable. The reviewer is a repair
     # layer, so a response trying to rewrite most of an episode is unsafe.
     # Allow one short fragment group even in a tiny test/clip, while long
-    # episodes still cap the reviewer's total rewrite surface at about 35%.
-    max_affected_items = max(8, (total_items * 35 + 99) // 100)
+    # episodes still cap the reviewer's total rewrite surface at about 40%.
+    # This is deliberately independent from the stricter deletion limits below.
+    max_affected_items = max(8, (total_items * 40 + 99) // 100)
     max_deleted_items = max(1, (total_items + 7) // 8)  # at most about 12.5%
     episode_start = min(srt_time_to_seconds(item.start) for item in timed_items)
     episode_end = max(srt_time_to_seconds(item.end) for item in timed_items)
