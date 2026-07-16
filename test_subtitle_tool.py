@@ -24,6 +24,19 @@ class SubtitleToolTests(unittest.TestCase):
         slot.assert_called_once_with(5, "AI 测试")
         fetch.assert_called_once()
 
+    def test_llm_http_request_can_use_smaller_retry_slot_pool(self) -> None:
+        lease = mock.MagicMock()
+        lease.__enter__.return_value = 1
+        with (
+            mock.patch.object(subtitle_tool, "global_llm_slot", return_value=lease) as slot,
+            mock.patch.object(subtitle_tool, "fetch_chat_completion_json", return_value={"ok": True}),
+        ):
+            result = subtitle_tool.fetch_chat_completion_json_with_slot(
+                "https://example.invalid", b"{}", "key", 30, "AI retry", slot_limit=2
+            )
+        self.assertEqual(result, {"ok": True})
+        slot.assert_called_once_with(2, "AI retry")
+
     def test_chinese_history_glossary_loads_and_builds_prompt(self) -> None:
         glossary = subtitle_tool.load_glossary_file(
             Path(__file__).with_name("glossaries") / "chinese_history_zh_en_ar.json"
@@ -122,7 +135,7 @@ class SubtitleToolTests(unittest.TestCase):
 
     def test_indexed_translation_retries_malformed_json(self) -> None:
         responses = [
-            {"choices": [{"message": {"content": '{"translations":[{"index":1,"text":"broken"}'}}]},
+            {"choices": [{"message": {"content": '{"translations":[{"index":1,"text":"brok'}}]},
             {"choices": [{"message": {"content": json.dumps({"translations": [{"index": 1, "text": "fixed"}]})}}]},
         ]
         with (
@@ -136,6 +149,71 @@ class SubtitleToolTests(unittest.TestCase):
             )
         self.assertEqual(result, ["fixed"])
         self.assertEqual(fetch.call_count, 2)
+
+    def test_indexed_translation_salvages_complete_rows_and_keeps_full_context(self) -> None:
+        requests = []
+        responses = [
+            {"choices": [{"message": {"content": (
+                '{"translations":['
+                '{"index":1,"text":"one"},'
+                '{"index":2,"text":"two"},'
+                '{"index":3,"text":"thr'
+            )}}]},
+            {"choices": [{"message": {"content": json.dumps({
+                "translations": [{"index": 3, "text": "three"}]
+            })}}]},
+        ]
+
+        def fake_fetch(_url, request_data, _api_key, _timeout_seconds):
+            payload = json.loads(request_data.decode("utf-8"))
+            user = json.loads(payload["messages"][1]["content"])
+            requests.append((user["requested_indexes"], user["items"]))
+            return responses[len(requests) - 1]
+
+        full_items = [{"index": 1, "source": "a"}, {"index": 2, "source": "b"}, {"index": 3, "source": "c"}]
+        with (
+            mock.patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}, clear=False),
+            mock.patch.object(subtitle_tool, "fetch_chat_completion_json", side_effect=fake_fetch),
+            mock.patch.object(subtitle_tool.time, "sleep"),
+        ):
+            result = subtitle_tool.chat_indexed_translations_openai_compatible(
+                prompt="Return indexed JSON.", user_payload={"items": full_items},
+                model="model", item_indexes=[1, 2, 3], log_label="AI test",
+            )
+
+        self.assertEqual(result, ["one", "two", "three"])
+        self.assertEqual([request[0] for request in requests], [[1, 2, 3], [3]])
+        self.assertEqual(requests[0][1], full_items)
+        self.assertEqual(requests[1][1], full_items)
+
+    def test_indexed_translation_starts_recovery_round_after_empty_first_round(self) -> None:
+        responses = [
+            {"choices": [{"message": {"content": ""}}]},
+            {"choices": [{"message": {"content": json.dumps({
+                "translations": [{"index": 1, "text": "fixed"}]
+            })}}]},
+        ]
+        lease = mock.MagicMock()
+        lease.__enter__.return_value = 1
+        with (
+            mock.patch.dict("os.environ", {
+                "OPENAI_API_KEY": "test-key",
+                "LLM_MAX_ATTEMPTS": "1",
+                "LLM_TRANSLATION_ROUNDS": "2",
+            }, clear=False),
+            mock.patch.object(subtitle_tool, "fetch_chat_completion_json", side_effect=responses),
+            mock.patch.object(subtitle_tool, "global_llm_slot", return_value=lease) as slot,
+            mock.patch.object(subtitle_tool.time, "sleep") as sleep,
+        ):
+            result = subtitle_tool.chat_indexed_translations_openai_compatible(
+                prompt="Return indexed JSON.", user_payload={"items": [{"index": 1}]},
+                model="model", item_indexes=[1], log_label="AI test",
+            )
+
+        self.assertEqual(result, ["fixed"])
+        self.assertEqual(slot.call_args_list[0].args[0], 5)
+        self.assertEqual(slot.call_args_list[1].args[0], 2)
+        sleep.assert_called_once_with(5)
 
     def test_indexed_translation_rejects_duplicate_index(self) -> None:
         content = json.dumps({"translations": [
@@ -531,6 +609,100 @@ class SubtitleToolTests(unittest.TestCase):
         self.assertEqual(text, "زوي وجوليا")
         self.assertEqual(stats["validated_replacements"], 0)
 
+    def test_high_confidence_person_replacement_tolerates_merged_index_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            path = Path(temp_name) / "episode.srt"
+            subtitle_tool.write_srt([
+                subtitle_tool.SubtitleItem(1, "00:00:01,000", "00:00:02,000", "Solon returned")
+            ], path)
+            evidence = {
+                "1": {
+                    "rows": {10: {"target": ["Solon returned"]}},
+                    "reports": [{"entities": [{
+                        "kind": "person", "target_variants": ["Solon"],
+                        "preferred_target": "Solon", "evidence_indexes": [11],
+                    }]}],
+                },
+                "2": {
+                    "rows": {20: {"target": ["Sorin frowned"]}},
+                    "reports": [{"entities": [{
+                        "kind": "person", "target_variants": ["Sorin"],
+                        "preferred_target": "Sorin", "evidence_indexes": [21],
+                    }]}],
+                },
+            }
+            stats = subtitle_tool.apply_series_consistency_replacements(
+                [path], [{
+                    "kind": "person", "from": "Solon", "to": "Sorin", "confidence": 0.95,
+                    "evidence": [{"episode": 1, "indexes": [10]}, {"episode": 2, "indexes": [20]}],
+                }], evidence,
+            )
+
+            text = subtitle_tool.parse_srt(path)[0].text
+
+        self.assertEqual(text, "Sorin returned")
+        self.assertEqual(stats["validated_replacements"], 1)
+
+    def test_relaxed_person_evidence_still_requires_high_confidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            path = Path(temp_name) / "episode.srt"
+            subtitle_tool.write_srt([
+                subtitle_tool.SubtitleItem(1, "00:00:01,000", "00:00:02,000", "Solon returned")
+            ], path)
+            evidence = {
+                str(episode): {
+                    "rows": {episode: {"target": ["Solon" if episode == 1 else "Sorin"]}},
+                    "reports": [{"entities": [{
+                        "kind": "person", "target_variants": ["Solon" if episode == 1 else "Sorin"],
+                        "evidence_indexes": [episode + 10],
+                    }]}],
+                }
+                for episode in (1, 2)
+            }
+            stats = subtitle_tool.apply_series_consistency_replacements(
+                [path], [{
+                    "kind": "person", "from": "Solon", "to": "Sorin", "confidence": 0.89,
+                    "evidence": [{"episode": 1, "indexes": [1]}, {"episode": 2, "indexes": [2]}],
+                }], evidence,
+            )
+            text = subtitle_tool.parse_srt(path)[0].text
+
+        self.assertEqual(text, "Solon returned")
+        self.assertEqual(stats["validated_replacements"], 0)
+
+    def test_person_evidence_accepts_short_name_inside_full_name_variant(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            path = Path(temp_name) / "episode.srt"
+            subtitle_tool.write_srt([
+                subtitle_tool.SubtitleItem(1, "00:00:01,000", "00:00:02,000", "Lady Vaag arrived")
+            ], path)
+            evidence = {
+                "1": {
+                    "rows": {1: {"target": ["Lady Vaag arrived"]}},
+                    "reports": [{"entities": [{
+                        "kind": "person", "target_variants": ["Lady Vaag"],
+                        "evidence_indexes": [1],
+                    }]}],
+                },
+                "2": {
+                    "rows": {2: {"target": ["Gunnar Varg arrived"]}},
+                    "reports": [{"entities": [{
+                        "kind": "person", "target_variants": ["Gunnar Varg"],
+                        "evidence_indexes": [2],
+                    }]}],
+                },
+            }
+            stats = subtitle_tool.apply_series_consistency_replacements(
+                [path], [{
+                    "kind": "person", "from": "Vaag", "to": "Varg", "confidence": 0.85,
+                    "evidence": [{"episode": 1, "indexes": [1]}, {"episode": 2, "indexes": [2]}],
+                }], evidence,
+            )
+            text = subtitle_tool.parse_srt(path)[0].text
+
+        self.assertEqual(text, "Lady Varg arrived")
+        self.assertEqual(stats["validated_replacements"], 1)
+
     def test_series_consistency_rejects_chained_replacements(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:
             path = Path(temp_name) / "episode.srt"
@@ -660,6 +832,7 @@ class SubtitleToolTests(unittest.TestCase):
         with (
             mock.patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}, clear=False),
             mock.patch("subtitle_tool.urllib.request.urlopen", return_value=response),
+            mock.patch.object(subtitle_tool.time, "sleep"),
         ):
             with self.assertRaisesRegex(RuntimeError, "返回格式无效"):
                 subtitle_tool.translate_texts_openai_compatible(["hello"], "English", "auto", "model")

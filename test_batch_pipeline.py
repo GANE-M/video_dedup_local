@@ -215,6 +215,69 @@ class SubtitleTimingTests(unittest.TestCase):
         self.assertEqual(command[command.index("--ffmpeg") + 1], "custom-ffmpeg")
         self.assertEqual(command[command.index("--ffprobe") + 1], "custom-ffprobe")
 
+    def test_prepare_retries_source_stage_only_when_ocr_and_asr_both_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.json"
+            config.write_text("{}", encoding="utf-8")
+            args = batch_pipeline.make_parser().parse_args([
+                str(root / "input"), str(root / "output"), "--config", str(config),
+            ])
+            args.translation_run_dir = root / "logs"
+            args.translation_run_dir.mkdir()
+            args.glossary_data = None
+
+            def fake_sources(_input, visual_srt, *_args, **_kwargs):
+                if source.call_count < 3:
+                    raise RuntimeError("OCR 与音频 ASR 均失败: temporary")
+                batch_pipeline.subtitle_tool.write_srt(
+                    [batch_pipeline.subtitle_tool.SubtitleItem(
+                        1, "00:00:00,000", "00:00:01,000", "source"
+                    )],
+                    visual_srt,
+                )
+                return {"ocr": visual_srt}
+
+            with (
+                mock.patch.object(batch_pipeline.video_dedup, "find_binary", side_effect=lambda name, _path: name),
+                mock.patch.object(batch_pipeline, "make_subtitle_sources", side_effect=fake_sources) as source,
+                mock.patch.object(batch_pipeline.subtitle_tool, "translate_srt") as translate,
+                mock.patch.object(batch_pipeline.time, "sleep") as sleep,
+            ):
+                prepared = batch_pipeline.prepare_video_subtitles(
+                    args, root / "input.mp4", root / "output.mp4", 2026, 1, 1
+                )
+
+        self.assertEqual(source.call_count, 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [2, 4])
+        translate.assert_called_once()
+        self.assertEqual(prepared["index"], 1)
+
+    def test_prepare_does_not_retry_a_single_source_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.json"
+            config.write_text("{}", encoding="utf-8")
+            args = batch_pipeline.make_parser().parse_args([
+                str(root / "input"), str(root / "output"), "--config", str(config),
+            ])
+            args.translation_run_dir = root / "logs"
+            args.translation_run_dir.mkdir()
+            with (
+                mock.patch.object(batch_pipeline.video_dedup, "find_binary", return_value="binary"),
+                mock.patch.object(
+                    batch_pipeline, "make_subtitle_sources", side_effect=RuntimeError("OCR failed")
+                ) as source,
+                mock.patch.object(batch_pipeline.time, "sleep") as sleep,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "OCR failed"):
+                    batch_pipeline.prepare_video_subtitles(
+                        args, root / "input.mp4", root / "output.mp4", 2026, 1, 1
+                    )
+
+        source.assert_called_once()
+        sleep.assert_not_called()
+
     def test_subtitle_directory_runs_prepare_audit_then_encode(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
