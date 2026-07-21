@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "project_id": "my-short-drama-recap",
+  "project_name": "我的短剧解说",
+  "source_root": "E:/Videos/MyDrama",
+  "episode_pattern": "MyDrama-第{episode}集.mp4",
+  "subtitle_root": "E:/Videos/MyDrama/字幕终稿",
+  "output_root": "E:/Videos/MyDrama/解说剪辑输出",
+  "target_language": "English",
+  "target_duration_seconds": 450,
+  "voice_id": "calm_female",
+  "narration_speed": 1.0,
+  "narration_target_loudness": "match_source_program",
+  "segments": [
+    {
+      "segment_id": "seg-001",
+      "episode": 1,
+      "source_start": 0.0,
+      "source_end": 12.0,
+      "mode": "narration",
+      "narration_text": "This woman has no idea that the stranger in front of her is about to change everything.",
+      "purpose": "hook",
+      "revision": 1,
+      "rendering": {},
+      "cache_key": ""
+    },
+    {
+      "segment_id": "seg-002",
+      "episode": 1,
+      "source_start": 18.0,
+      "source_end": 32.0,
+      "mode": "original",
+      "narration_text": "",
+      "purpose": "payoff dialogue",
+      "revision": 1,
+      "rendering": {},
+      "cache_key": ""
+    }
+  ],
+  "current_version": 1,
+  "created_at": "2026-07-21T00:00:00+08:00",
+  "updated_at": "2026-07-21T00:00:00+08:00",
+  "rendering": {
+    "hardware_acceleration": "auto",
+    "crf": 21,
+    "caption_y_percent": 12.0,
+    "caption_font_size": 38,
+    "narration_lead_in": 0.5,
+    "original_audio_tail": 0.5
+  }
+}

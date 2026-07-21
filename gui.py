@@ -19,6 +19,7 @@ from pathlib import Path
 from tkinter import colorchooser, filedialog, messagebox, ttk
 
 import video_dedup
+from recap_gui import RecapWorkspace
 
 
 @dataclass
@@ -195,6 +196,9 @@ class VideoToolApp(tk.Tk):
         notebook.add(audio_tab, text="声音")
         notebook.add(output_tab, text="输出质量")
         notebook.add(subtitle_container, text="字幕")
+        recap_tab = ttk.Frame(notebook)
+        notebook.add(recap_tab, text="\u89e3\u8bf4\u526a\u8f91")
+        self.recap_workspace = RecapWorkspace(recap_tab)
 
         self._scale_row(video_tab, 0, "裁边比例 (%)", self.crop, 0, 15, 0.1)
         ttk.Checkbutton(video_tab, text="水平镜像", variable=self.mirror).grid(row=1, column=0, columnspan=3, sticky="w", pady=6)

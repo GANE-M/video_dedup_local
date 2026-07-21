@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "voices": [
+    {
+      "voice_id": "calm_female",
+      "display_name": "平静女声",
+      "gender": "female",
+      "languages": ["English"],
+      "style": ["calm", "documentary", "grounded"],
+      "reference_audio": "calm_female/reference.wav",
+      "reference_text": "I will tell this story calmly and clearly. Every detail matters, but the truth needs no exaggeration.",
+      "default_speed": 1.0,
+      "target_loudness_mode": "match_source_program",
+      "preview_text": "A quiet decision can change an entire life. Here is how the story truly began, why no one recognized the warning signs, and how one final choice changed everything for the people caught in the middle.",
+      "preview_audio": "calm_female/preview.wav",
+      "engine": "qwen3_tts_voice_clone",
+      "model_version": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+      "generation_parameters": {"do_sample": true, "temperature": 0.55, "top_p": 0.8, "top_k": 30, "repetition_penalty": 1.05},
+      "design_instruction": "Female English narrator, late twenties, warm, grounded and conversational. Calm documentary delivery with restrained emotion and natural pauses."
+    },
+    {
+      "voice_id": "calm_male",
+      "display_name": "平静男声",
+      "gender": "male",
+      "languages": ["English"],
+      "style": ["calm", "documentary", "medium-low"],
+      "reference_audio": "calm_male/reference.wav",
+      "reference_text": "I will tell this story with a calm and steady voice. The danger is real, so every word should remain clear and controlled.",
+      "default_speed": 1.0,
+      "target_loudness_mode": "match_source_program",
+      "preview_text": "A quiet decision can change an entire life. Here is how the story truly began, why no one recognized the warning signs, and how one final choice changed everything for the people caught in the middle.",
+      "preview_audio": "calm_male/preview.wav",
+      "engine": "qwen3_tts_voice_clone",
+      "model_version": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+      "generation_parameters": {"do_sample": true, "temperature": 0.55, "top_p": 0.8, "top_k": 30, "repetition_penalty": 1.05},
+      "design_instruction": "Male English narrator, early thirties, warm, natural and grounded. Calm documentary delivery with a medium-low pitch and restrained emotion."
+    }
+  ]
+}
