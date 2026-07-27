@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Andymori 视频处理工作台</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20260727-28">
+</head>
+<body>
+  <div id="versionRefreshNotice" class="version-refresh-notice hidden" role="status">
+    <strong>服务器已经更新，请按 Ctrl+F5 刷新页面。</strong>
+    <span>鼠标移入此提示即可关闭</span>
+  </div>
+<header class="topbar">
+  <div><h1>Andymori 视频处理工作台</h1><p>批量去重、字幕识别翻译、动态特效与 Agent 协作</p></div>
+  <div id="health" class="pill">正在连接服务…</div>
+</header>
+
+<main>
+  <section class="card access-grid">
+    <label>访问密钥<input id="apiKey" type="password" autocomplete="off" placeholder="vdl_..."></label>
+    <button id="connect" class="primary">连接并读取配置</button>
+    <button id="runPreflight" type="button">检查服务器环境</button>
+    <label>剧名 / 任务名<input id="series" maxlength="120" autocomplete="off" placeholder="选择文件夹后自动填写，仍可修改"></label>
+    <div class="video-pickers">
+      <label>选择视频（单个或多选）<input id="files" type="file" accept="video/*,.mkv,.m4v" multiple></label>
+      <label>选择工程/素材文件夹 <button id="chooseSourceFolder" type="button">选择并授权文件夹</button></label>
+      <label>兼容模式（只读、仅读第一层）<input id="folderFiles" type="file" accept="video/*,.mkv,.m4v" webkitdirectory directory multiple></label>
+    </div>
+    <div class="video-pickers wide">
+      <label>成片目录（默认工程/processed）<button id="chooseOutputFolder" type="button">更换 processed 目录</button></label>
+      <label class="check"><input id="autoSaveOutputs" type="checkbox" checked>任务完成后自动保存成片</label>
+      <span id="outputFolderStatus" class="muted">选择工程文件夹后，默认保存到其 processed 子文件夹</span>
+    </div>
+    <div class="wide"><ul id="fileList" class="file-list"></ul></div>
+  </section>
+
+  <section id="workspace" class="card hidden">
+    <div class="toolbar">
+      <label>处理强度<select id="preset"><option value="light">初级</option><option value="medium" selected>中级</option><option value="strong">高级</option><option value="deep">深度</option></select></label>
+      <button id="loadPreset">载入预设</button>
+      <label>随机种子<input id="seed" type="number" value="2026"></label>
+      <label>请求并发<input id="requestedWorkers" type="number" min="1" max="10" value="5"></label>
+      <button id="saveConfig">导出配置</button>
+      <label class="button-label">导入配置<input id="loadConfig" type="file" accept="application/json" hidden></label>
+      <span id="autosave" class="muted">设置自动保存在本浏览器</span>
+    </div>
+
+    <details open class="workflow-stages">
+      <summary>处理阶段（可独立或组合）</summary>
+      <div class="toolbar inset">
+        <label class="check"><input id="enableSubtitles" type="checkbox" checked>1. 字幕获取与翻译</label>
+        <label class="check"><input id="enableRecap" type="checkbox">2. 解说视频编排与剪辑</label>
+        <label class="check"><input id="enableDedup" type="checkbox" checked>3. 二次去重</label>
+        <span class="muted">组合顺序固定为：字幕 → 解说 → 去重</span>
+      </div>
+    </details>
+
+    <nav class="tabs" aria-label="处理设置">
+      <button class="tab active" data-tab="dedup">二次去重</button>
+      <button class="tab" data-tab="subtitles">字幕</button>
+      <button class="tab" data-tab="recap">解说剪辑</button>
+    </nav>
+
+    <div id="dedup" class="tab-panel active dedup-panel">
+      <p class="muted">画面变化、时间处理、声音、编码质量和动态特效都属于二次去重；按需展开设置，不展开也会使用当前保存值。</p>
+
+      <details class="dedup-section"><summary>画面变化</summary><div id="picture" class="settings-grid inset">
+      <label>裁边比例 (%)<input id="cropPercent" type="range" min="0" max="15" step="0.1"><output></output></label>
+      <label>视频放大 (%)<input id="zoomPercent" type="range" min="0" max="50" step="1"><output></output></label>
+      <label class="check"><input id="mirror" type="checkbox">水平镜像</label>
+      <label>亮度<input id="brightness" type="range" min="-0.2" max="0.2" step="0.005"><output></output></label>
+      <label>对比度<input id="contrast" type="range" min="0.5" max="2" step="0.01"><output></output></label>
+      <label>饱和度<input id="saturation" type="range" min="0" max="3" step="0.01"><output></output></label>
+      <label>色彩叠加透明度<input id="colorOpacity" type="range" min="0" max="0.3" step="0.005"><output></output></label>
+      <label>叠加颜色<input id="color" type="color" value="#8bc34a"></label>
+      </div></details>
+
+      <details class="dedup-section"><summary>时间与速度</summary><div id="time" class="settings-grid inset">
+      <label>播放速度<input id="speed" type="range" min="0.5" max="2" step="0.005"><output></output></label>
+      <label>淡入淡出（秒）<input id="fadeSeconds" type="range" min="0" max="5" step="0.05"><output></output></label>
+      <label>裁掉开头（秒）<input id="trimStart" type="number" min="0" max="3600" step="0.1"></label>
+      <label>裁掉结尾（秒）<input id="trimEnd" type="number" min="0" max="3600" step="0.1"></label>
+      </div></details>
+
+      <details class="dedup-section"><summary>声音与背景音乐</summary><div id="audio" class="settings-grid inset">
+      <label class="check"><input id="keepAudio" type="checkbox" checked>保留原视频声音</label>
+      <label>背景音乐音量<input id="musicVolume" type="range" min="0" max="1" step="0.01"><output></output></label>
+      <label>指定背景音乐<input id="musicFile" type="file" accept="audio/*,.m4a,.aac,.flac,.ogg,.opus"></label>
+      <label>随机音乐池（可多选）<input id="musicPool" type="file" accept="audio/*,.m4a,.aac,.flac,.ogg,.opus" multiple></label>
+      <p class="wide muted">指定单曲优先；未指定单曲时，每个视频从音乐池随机选择。素材会随任务加密上传。</p>
+      </div></details>
+
+      <details class="dedup-section"><summary>输出质量与硬件编码</summary><div id="output" class="settings-grid inset">
+      <label>CRF（越低越清晰、文件越大）<input id="crf" type="range" min="14" max="32" step="1"><output></output></label>
+      <label>编码速度<select id="encoderPreset"><option>ultrafast</option><option>veryfast</option><option>fast</option><option selected>medium</option><option>slow</option></select></label>
+      <label>硬件编码<select id="hardware"><option>auto</option><option>nvidia</option><option>amd</option><option>intel</option><option>apple</option><option>cpu</option></select></label>
+      <label>固定帧率<select id="targetFps"><option value="0">保持源帧率</option><option>24</option><option>25</option><option>30</option><option>50</option><option>60</option></select></label>
+      </div></details>
+
+      <details class="dedup-section"><summary>动态特效、画中画与边框</summary><div id="effects" class="settings-grid inset">
+      <label class="check"><input id="blurBackground" type="checkbox">模糊背景＋主体画中画</label>
+      <label>背景模糊强度<input id="blurSigma" type="range" min="0" max="40" step="1"><output></output></label>
+      <label>主体画面比例<input id="foregroundScale" type="range" min="0.5" max="1" step="0.01"><output></output></label>
+      <label>输出画幅<select id="outputAspect"><option value="source">保持原画幅</option><option value="portrait">竖屏 9:16</option><option value="landscape">横屏 16:9</option><option value="square">方形 1:1</option></select></label>
+      <label>边框素材<input id="borderFile" type="file" accept="image/*,video/*,.mkv"></label>
+      <hr class="wide">
+      <label class="check"><input id="enableEffects" type="checkbox">启用随机动态特效</label>
+      <label class="check"><input id="effectRandomType" type="checkbox" checked>每次随机选择不同特效</label>
+      <label>固定特效文件<input id="effectFile" type="file" accept="image/*,video/*,.mkv"></label>
+      <label>随机特效池（可多选）<input id="effectPool" type="file" accept="image/*,video/*,.mkv" multiple></label>
+      <label>出现方式<select id="effectTiming"><option value="random">随机时间出现</option><option value="continuous">全程循环</option></select></label>
+      <label>每分钟出现次数<input id="effectFrequency" type="range" min="0.5" max="12" step="0.5"><output></output></label>
+      <label>单次持续时间（秒）<input id="effectDuration" type="range" min="0.5" max="15" step="0.5"><output></output></label>
+      <label>特效透明度<input id="effectOpacity" type="range" min="0.01" max="1" step="0.01"><output></output></label>
+      <label>素材背景<select id="effectKeyMode"><option value="black">黑色背景</option><option value="green">绿色幕布</option><option value="alpha">透明通道</option></select></label>
+      <label>显示区域<select id="effectPosition"><option value="full">全屏</option><option value="top">顶部</option><option value="bottom">底部</option></select></label>
+      </div></details>
+    </div>
+
+    <div id="subtitles" class="tab-panel">
+      <div class="settings-grid">
+        <p class="wide muted">字幕阶段设置：识别/读取 → 翻译审核 → 保存字幕终稿；是否继续编码视频由顶部阶段选择决定。</p>
+        <label>字幕来源<select id="subtitleSource"><option value="auto">自动：软字幕优先，否则OCR+ASR</option><option value="auto-ocr">自动：软字幕优先，否则OCR</option><option value="soft-asr">软字幕+ASR交叉</option><option value="ocr-asr">硬字幕OCR+ASR交叉</option><option value="soft">只用软字幕</option><option value="hard-ocr">只用硬字幕OCR</option><option value="asr">只用音频ASR</option></select></label>
+        <label>原字幕语言（OCR）<select id="ocrLanguage"></select></label>
+        <label>OCR设备<select id="ocrDevice"><option>auto</option><option>cuda</option><option>cpu</option></select></label>
+        <label>翻译源语言<select id="sourceLanguage"></select></label>
+        <label>目标语言<select id="targetLanguage"></select></label>
+        <label>术语表<span class="inline-control"><select id="glossary"><option value="">不使用术语表</option></select><button id="refreshGlossaries" type="button">刷新</button></span></label>
+        <label>翻译方式<select id="translationBackend"><option value="agent">Agent模式</option><option value="api">API模式</option></select></label>
+        <label>翻译质量<select id="translationQuality"><option value="fast">快速翻译</option><option value="advanced">高级翻译</option></select></label>
+        <label>本地化策略<select id="localizationStrategy"><option value="cinematic_standard">标准影视本地化</option><option value="conversational">自然口语</option><option value="formal_faithful">忠实正式</option><option value="gulf_neutral">海湾中性口语（阿拉伯语）</option></select></label>
+        <label class="check wide"><input id="reuseSubtitleCache" type="checkbox" checked>优先复用已有“字幕终稿”</label>
+      </div>
+
+      <details id="agentPanel" open><summary>Agent 模式设置</summary><div class="inset">
+        <div class="toolbar"><button id="webAgentInit">生成 / 显示初始化命令</button><button id="webAgentTest">测试通信</button><button id="webAgentStop">停止 Agent 监听</button><span id="webAgentStatus" class="muted">尚未检测</span></div>
+        <pre id="webAgentCommand" class="hidden"></pre>
+        <button id="webAgentCopy" class="hidden">复制初始化命令</button>
+      </div></details>
+
+      <details id="apiPanel"><summary>API模式设置</summary><div class="settings-grid inset">
+        <label>LLM API Key<input id="llmApiKey" type="password" autocomplete="off"></label>
+        <label>接口地址<input id="llmBaseUrl" value="https://theruta.ai/api/v1/chat/completions"></label>
+        <label>初译模型<input id="llmModel" value="deepseek-v4-flash"></label>
+        <label class="check"><input id="enableLlmReview" type="checkbox" checked>启用整集语义和全剧一致性审核</label>
+        <label>审核模型<input id="llmReviewModel" value="deepseek-v4-flash"></label>
+        <label>高可信阈值<input id="reviewThreshold" type="number" min="0" max="1" step="0.01" value="0.82"></label>
+      </div></details>
+
+      <details><summary>字幕样式、遮挡和本地随机帧预览</summary>
+        <div class="preview-layout inset">
+          <div class="settings-grid compact">
+            <label>添加方式<select id="subtitleMode"><option value="burn">烧录到画面</option><option value="soft">封装软字幕</option></select></label>
+            <label>覆盖形式<select id="subtitleLayout"><option value="replace">覆盖原字幕</option><option value="bilingual">双语字幕</option></select></label>
+            <label>字幕位置<select id="subtitlePosition"><option value="auto">自动</option><option value="bottom">底部</option><option value="top">顶部</option></select></label>
+            <label class="check"><input id="subtitleCover" type="checkbox" checked>遮挡旧字幕区域</label>
+            <label class="check"><input id="coverAutoDetect" type="checkbox" checked>服务器OCR自动识别区域，失败时使用手动范围</label>
+            <label>区域左侧 (%)<input id="coverX" type="range" min="0" max="90" step="0.1"><output></output></label>
+            <label>区域宽度 (%)<input id="coverWidth" type="range" min="10" max="100" step="0.1"><output></output></label>
+            <label>区域起点高度 (%)<input id="coverY" type="range" min="0" max="96" step="0.1"><output></output></label>
+            <label>区域高度 (%)<input id="coverHeight" type="range" min="4" max="40" step="0.1"><output></output></label>
+            <label>遮挡方式<select id="coverMode"><option value="blur">局部高斯模糊</option><option value="color">白色半透明蒙版</option></select></label>
+            <label>模糊强度<input id="coverBlurSigma" type="range" min="0.5" max="50" step="0.5"><output></output></label>
+            <label>白色蒙版透明度<input id="coverOpacity" type="range" min="0" max="1" step="0.01"><output></output></label>
+            <label>字幕字体<select id="fontName"></select></label>
+            <label>字幕字号<input id="fontSize" type="range" min="16" max="64" step="1"><output></output></label>
+            <label>Whisper模型<input id="whisperModel" value="medium"></label>
+            <label>Whisper设备<select id="whisperDevice"><option>auto</option><option>cuda</option><option>cpu</option></select></label>
+          </div>
+          <div class="preview-card">
+            <div class="toolbar"><button id="previewFirst">使用第一个视频</button><label class="button-label">另选预览视频<input id="previewFile" type="file" accept="video/*,.mkv" hidden></label><button id="randomFrame">随机换一帧</button><span id="previewStatus" class="muted">尚未载入</span></div>
+            <label>预览字幕<input id="previewText" value="Are you sure he's here?"></label>
+            <canvas id="previewCanvas" width="540" height="720"></canvas>
+            <video id="previewVideo" class="preview-source-video" preload="auto" muted playsinline></video>
+            <p class="muted">帧只在你的浏览器本地解码。拖动框内部可移动，拖动四角可缩放；字号、位置和遮挡参数会实时显示。</p>
+          </div>
+        </div>
+      </details>
+    </div>
+
+    <div id="recap" class="tab-panel">
+      <div class="notice"><strong>解说剪辑使用独立、可版本化的项目。</strong><p>上传后会把字幕终稿提交给已初始化的解说 Agent；Agent 返回完整结构化时间轴并通过校验后，才可预览或生成最终成片。</p></div>
+      <div class="settings-grid inset">
+        <label>解说项目名<input id="recapProjectName" placeholder="默认使用任务名"></label>
+        <label>集数文件规则<input id="recapEpisodePattern" value="*.mp4" placeholder="例如 *第{episode}集.mp4"></label>
+        <label>解说语言<select id="recapTargetLanguage"><option value="English">英语</option><option value="Arabic">阿拉伯语</option><option value="Chinese">中文</option></select></label>
+        <label>解说节奏预设<select id="recapNarrationPreset"><option value="fast">快节奏（成片约38%，解说密度高）</option><option value="standard" selected>标准解说（成片约50%）</option><option value="immersive">沉浸剧情（成片约65%，保留更多原声）</option></select><small class="muted">服务器会按语言、声纹语速和成片时长自动计算口播字数预算。</small></label>
+        <label>对应语音模型<select id="recapTtsEngine"><option value="auto">自动（默认 Qwen3 TTS）</option><option value="qwen3_tts">Qwen3 TTS</option><option value="fish_s2">Fish Speech S2</option><option value="chatterbox_v3">Chatterbox V3</option></select></label>
+        <label>目标时长（秒）<input id="recapTargetDuration" type="number" min="1" max="7200" placeholder="留空则按所选节奏预设自动计算"><small class="muted">默认留空；手动填写时覆盖预设的成片比例，但仍使用预设口播密度。</small></label>
+        <label>固定声纹<span class="inline-control"><select id="recapVoice"></select><button id="recapPlayVoice" type="button">▶ 试听当前声纹</button></span><small id="recapVoiceStatus" class="muted">连接服务器后加载声纹</small></label>
+        <label>解说语速<input id="recapSpeed" type="number" min="0.5" max="2" step="0.05" value="1"></label>
+        <label>解说音量处理<select id="recapLoudness"><option value="keep_original" selected>保持模型原始音量（不修改）</option><option value="match_source_program">匹配原片节目响度</option><option value="-18">统一到 -18 LUFS</option></select></label>
+        <label>渲染硬件<select id="recapHardware"><option>auto</option><option selected>nvidia</option><option>amd</option><option>intel</option><option>apple</option><option>cpu</option></select></label>
+        <label>渲染 CRF<input id="recapCrf" type="number" min="14" max="32" value="23"></label>
+        <div class="toolbar wide">
+          <button id="recapCreate" class="primary">上传素材并新建项目</button>
+          <button id="recapLoadCurrent">载入当前任务项目</button>
+          <button id="recapQueueAgent">提交/重试解说 Agent</button>
+          <button id="recapSaveProject">保存项目设置</button>
+          <span id="recapProjectStatus" class="muted">尚未载入项目</span>
+          <span id="recapAgentStatus" class="muted">解说 Agent 尚未排队</span>
+        </div>
+      </div>
+
+      <details id="recapCaptionPreviewPanel">
+        <summary>解说字幕随机帧预览与位置设置</summary>
+        <div class="recap-preview-layout">
+          <div>
+            <div class="toolbar">
+              <button id="recapPreviewFirst" type="button">使用首个源视频</button>
+              <label class="button-label">选择其他视频<input id="recapPreviewFile" type="file" accept="video/*" hidden></label>
+              <button id="recapRandomFrame" type="button">随机换一帧</button>
+              <span id="recapPreviewStatus" class="muted">尚未加载预览视频</span>
+            </div>
+            <video id="recapPreviewVideo" class="preview-source-video" preload="auto" muted playsinline></video>
+            <canvas id="recapPreviewCanvas" width="420" height="640"></canvas>
+            <p class="muted">拖动画面中的字幕可调整纵向位置。随机帧只在浏览器本地读取，不会额外上传。</p>
+          </div>
+          <div class="settings-grid compact">
+            <label>预览字幕<input id="recapPreviewText" value="One decision changed everything."></label>
+            <label>字幕纵向位置 (%)<input id="recapCaptionY" type="range" min="0" max="92" step="0.5" value="12"><output>12</output></label>
+            <label>字幕字号<input id="recapCaptionFontSize" type="range" min="16" max="90" step="1" value="38"><output>38</output></label>
+          </div>
+        </div>
+      </details>
+
+      <div id="recapEditor" class="recap-layout hidden">
+        <div>
+          <div class="section-heading"><h3>片段时间轴</h3><button id="recapAddSegment">新增片段</button></div>
+          <div class="table-wrap"><table class="segment-table"><thead><tr><th>ID</th><th>集</th><th>源区间</th><th>模式</th><th>用途</th><th>修订</th></tr></thead><tbody id="recapSegments"></tbody></table></div>
+        </div>
+        <div class="segment-editor">
+          <h3>片段编辑</h3>
+          <label>片段 ID<input id="recapSegmentId" readonly></label>
+          <div class="two-col"><label>集数<input id="recapEpisode" type="number" min="1" value="1"></label><label>模式<select id="recapMode"><option value="narration">解说</option><option value="original">保留原声</option></select></label></div>
+          <div class="two-col"><label>开始秒<input id="recapStart" type="number" min="0" step="0.01" value="0"></label><label>结束秒<input id="recapEnd" type="number" min="0" step="0.01" value="10"></label></div>
+          <label>用途<input id="recapPurpose" placeholder="开场、转折、冲突等"></label>
+          <label>解说正文<textarea id="recapNarration" rows="8"></textarea></label>
+          <div class="toolbar"><button id="recapSaveSegment" class="primary">保存片段</button><button id="recapDeleteSegment">删除片段</button><button id="recapRenderSegment">仅渲染此片段</button></div>
+        </div>
+        <div class="wide">
+          <div class="toolbar"><button id="recapValidate">校验项目</button><button id="recapMeasure">测量响度</button><button id="recapPreview">生成预览</button><button id="recapFinal" class="primary">生成最终成片</button></div>
+          <pre id="recapLog">解说编辑器尚未启动；上传和处理进度请查看下方“任务状态与日志”。</pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="actionbar">
+      <button id="start" class="primary large">开始上传并处理</button>
+      <button id="cancel" disabled>停止当前任务</button>
+      <button id="resume" disabled>从检查点继续</button>
+      <progress id="uploadProgress" value="0" max="100"></progress>
+      <span id="message">就绪</span>
+    </div>
+  </section>
+
+  <section id="agentCard" class="card hidden"><h2>Agent初始化</h2><p>将下面命令粘贴到负责翻译的Codex对话；账户会话可持续领取该密钥创建的后续任务。</p><button id="copyAgent">复制命令</button><pre id="agentCommand"></pre></section>
+
+  <section class="card">
+    <div class="section-heading"><h2>任务队列与历史</h2><button id="refreshJobs">刷新</button></div>
+    <div id="jobList" class="job-list"><span class="muted">连接后显示任务</span></div>
+  </section>
+
+  <section class="card">
+    <div class="section-heading"><h2>服务器端存储</h2><button id="refreshStorage">刷新占用</button></div>
+    <p class="muted">这里只显示当前访问密钥在服务器上的资源，不读取用户电脑磁盘；全局存储只对服务器管理员可见。</p>
+    <div id="storageSummary" class="metrics"><span>尚未读取</span></div>
+    <div class="toolbar">
+      <label>清理范围
+        <select id="cleanupCategory">
+          <option value="chunks">上传分片</option>
+          <option value="inputs">已完成任务的上传源文件与素材</option>
+          <option value="completed_runtime">已发布完成任务的运行时视频副本</option>
+          <option value="failed_cancelled">失败/取消任务的完整运行目录</option>
+        </select>
+      </label>
+      <label>早于（天）<input id="cleanupDays" type="number" min="0" max="3650" value="7"></label>
+      <button id="previewCleanup">估算可释放空间</button>
+      <button id="executeCleanup" class="danger">确认清理</button>
+    </div>
+    <pre id="storageLog">尚未执行存储统计或清理操作；这里不是任务处理进度。</pre>
+  </section>
+
+  <section id="resultCard" class="card hidden">
+    <div class="metrics"><span>任务 <b id="jobId">-</b></span><span>版本 <b id="version">-</b></span><span>状态 <b id="jobStatus">-</b></span><span>队列 <b id="queuePosition">-</b></span></div>
+    <button id="saveArtifacts" type="button" disabled>同步成片、字幕终稿和任务记录</button>
+    <div id="artifacts" class="artifacts"></div>
+    <pre id="events">等待日志…</pre>
+  </section>
+</main>
+<script src="/static/js/core.js?v=20260727-28" defer></script>
+<script src="/static/js/files.js?v=20260727-28" defer></script>
+<script src="/static/js/jobs.js?v=20260727-28" defer></script>
+<script src="/static/js/recap.js?v=20260727-28" defer></script>
+<script src="/static/js/preview.js?v=20260727-28" defer></script>
+<script src="/static/js/resume.js?v=20260727-28" defer></script>
+<script src="/static/js/environment.js?v=20260727-28" defer></script>
+<script src="/static/js/storage.js?v=20260727-28" defer></script>
+<script src="/static/app.js?v=20260727-28" defer></script>
+</body>
+</html>

@@ -3,8 +3,9 @@
 ## 文档目的
 
 这份文档用于让维护主工程的 Codex 对话准确理解已经验证的解说剪辑代码、数据流、
-实现边界和迁移目标。它不是新剪辑任务的操作提示词；新剪辑对话的工作规则位于
-`CODEX_RECAP_INIT.md`。
+实现边界和迁移目标。它不是新剪辑任务的创作教程；对话身份位于
+`CODEX_RECAP_INIT.md`，故事理解、解说写作和镜头编排方法位于
+`RECAP_EDITOR_PLAYBOOK.md`。
 
 ## 当前状态
 
@@ -18,8 +19,9 @@ video-dedup-local/recap_gui.py
 ```
 
 桌面程序主窗口已经增加“解说剪辑”页面，可创建和载入项目、管理结构化片段、
-选择并试听固定声纹、执行校验和响度测量、局部渲染、预览及最终渲染。程序内部
-不运行自主 Agent，也不接入字幕翻译 Agent bridge。
+选择并试听固定声纹、执行校验和响度测量、局部渲染、预览及最终渲染。确定性引擎内部
+不运行自主 Agent。网页网关可以把剧情理解与时间轴编排交给外部 Codex 对话，但使用
+独立的 `recap_plan` 请求、心跳、创作材料和提交契约；它不会把解说响应塞进字幕翻译响应格式。
 
 原型仓库：
 
@@ -53,10 +55,14 @@ recap/
   visual_dedup.py      全片段对感知画面重复检查和 JSON 报告
   voice_library.py     声纹清单、资产解析和项目隔离缓存
   qwen_tts.py          Qwen3-TTS 固定参考声纹批量生成适配器
+  fish_s2_tts.py       Fish S2 Pro NF4 固定参考声纹批量生成适配器
+  chatterbox_tts.py    Chatterbox Multilingual V3 声纹克隆适配器
+  narration_text.py    阿语 Unicode、双向字符、标点及按词换行规范化
   loudness.py          源节目能量加权响度及两遍 loudnorm
   renderer.py          片段、四类母版、最终封装和解码检查
   cli.py               机器可读命令实现
-  voices/library.json  正式声纹库
+  voices/library.json  基础正式声纹库
+  voices/fish_s2_role_pack.json  Fish S2 角色扩展包与验证分数
   examples/project.example.json
 recap_cli.py           CLI 入口
 recap_gui.py           主 GUI 的解说剪辑工作区
@@ -92,7 +98,7 @@ recap_gui.py           主 GUI 的解说剪辑工作区
 | `segment_frame_hashes()` | 以每秒 2 帧抽样，裁掉底部字幕区域后计算灰度 dHash |
 | `duplicate_run()` | 搜索两段素材之间连续近似相同的画面序列 |
 | `validate_rendered_visual_uniqueness()` | 比较时间轴上所有片段对并输出 `duplicate_report.json` |
-| `generate_qwen_voices()` | 为所有解说段调用固定声纹生成器并复用项目独立缓存 |
+| `generate_voice_files()` | 按项目模型选择 Qwen、Fish 或 Chatterbox，并复用模型隔离的固定声纹缓存 |
 | `normalize_narration()` | 对单段解说执行实测两遍响度归一化和必要的校正 |
 | `narration_filter()` | 按句拆分解说文字并生成字幕显示区间 |
 | `build_segment()` | 根据 `narration` 或 `original` 模式生成单个音视频片段 |
@@ -122,6 +128,25 @@ recap_gui.py           主 GUI 的解说剪辑工作区
 Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
 Qwen/Qwen3-TTS-12Hz-1.7B-Base
 ```
+
+正式声纹库现合并加载 28 个 profile：英语与阿拉伯语各 14 个，每种语言 7 女 7 男，
+并各含两个完全合成的儿童角色音色。项目字段
+`tts_engine` 支持 `auto`、`qwen3_tts`、`fish_s2` 和 `chatterbox_v3`。自动路由规则
+是阿拉伯语使用 Fish S2、其他已支持语言使用 Qwen3-TTS；阿拉伯语只允许
+`fish_s2` 与 `chatterbox_v3`，任何入口显式选择 `qwen3_tts` 都会被拒绝。显式选择 Chatterbox 时，
+它会使用同一个 profile 的参考 WAV 进行克隆。缓存键包含模型、声纹、文本、语言、
+语速和生成参数，切换模型不会错误命中上一模型的音频。
+
+阿语渲染遵循以下确定性规则：
+
+1. 文本保持 Unicode 逻辑顺序，严禁手动翻转字符串；
+2. NFKC 统一字符，删除覆盖方向的隐藏控制符和 tatweel；
+3. 换行只在单词边界发生，不拆分阿语单词；
+4. FFmpeg `drawtext=text_shaping=1` 负责 RTL 字形连接；
+5. 语言、声纹、模型组合在进入推理前校验，Qwen 不会被误用于阿语。
+
+本机 Fish S2 Pro NF4 实测显存约 8.87 GB。其权重使用 Fish Audio Research
+License，商业用途需要另行授权；这与程序本身的代码许可是两件不同的事。
 
 ## 当前运行数据流
 
@@ -158,7 +183,7 @@ Qwen/Qwen3-TTS-12Hz-1.7B-Base
   "project_id": "american-sniper-demo",
   "source_root": "...",
   "voice_id": "calm_male_01",
-  "target_duration_seconds": 470,
+  "target_duration_seconds": 450,
   "segments": [
     {
       "segment_id": "seg-001",
@@ -206,17 +231,34 @@ Qwen/Qwen3-TTS-12Hz-1.7B-Base
 
 ## 响度策略
 
-每个项目先测量全部源视频的 integrated loudness，并按各集时长做能量加权。该结果
-成为整部解说的固定目标，而不是让每段配音各自决定音量。
+默认 `keep_original`：直接使用模型生成的配音响度，不扫描原片，也不执行
+`loudnorm` 或额外限幅。只有用户明确选择 `match_source_program` 时，项目才测量
+全部源视频的 integrated loudness，并按各集时长做能量加权；也可以明确填写 LUFS
+数字作为整部解说的固定目标。
+
+### 解说节奏预设与口播预算
+
+新项目必须选择 `fast`、`standard` 或 `immersive`。服务器在创建 Agent 任务时
+生成 `duration_budget`，其中包含目标成片时长、解说/原声预算、计量单位、声纹
+实测语速和全文目标字数/词数。阿拉伯语与英语使用 WPS，中文使用 CPS。默认基准
+分别为 2.0 WPS、2.6 WPS 和 4.2 CPS；声纹库可以按 TTS 引擎覆盖实测值。
+
+Agent 必须先在 beat sheet 中分配预算，再写正文。服务端最终提交校验会拒绝明显
+低于或高于预设口播占用率的解说段；若剧情不需要更多文字，应缩短解说区间并把
+成片预算分配给有价值的原声，而不是添加填充内容。
+
+渲染时 `trim_to_voice` 使用真实 WAV 时长、前置留白和尾部留白计算解说段的最终
+长度。`allow_visual_hold=true` 可用于有明确理由保留的氛围镜头；旧项目没有
+`narration_preset` 时继续使用 `legacy/preserve_window`，不会被新规则静默改变。
 
 已验证案例：
 
 - Interstellar General：源节目约 `-10.34 LUFS`，解说目标 `-10.3 LUFS`；
 - American Sniper：源节目约 `-17.97 LUFS`，解说目标 `-18.0 LUFS`。
 
-单段解说先执行 FFmpeg loudnorm 测量，再执行带 measured 参数的第二遍归一化；若
-限峰造成结果偏离超过约 0.15 dB，则继续进行小幅增益校正。最终仍使用 limiter
-控制峰值。
+启用响度修改后，单段解说先执行 FFmpeg loudnorm 测量，再执行带 measured 参数的
+第二遍归一化；若限峰造成结果偏离超过约 0.15 dB，则继续进行小幅增益校正。保持
+原始音量时跳过这些步骤。
 
 ## 画面去重实现
 
@@ -321,6 +363,10 @@ py -3.12 recap_cli.py project-diff --project <project.json> --from <version> --t
 py -3.12 recap_cli.py rollback-project --project <project.json> --version <version>
 ```
 
+`create-project` 默认探测全部匹配的源视频，并将 `target_duration_seconds` 设为源片
+总时长的 50%。可用 `--target-ratio` 调整比例，或用 `--target-duration` 明确覆盖为
+固定秒数。示例中的 450 秒表示源片总时长为 900 秒时按 50% 计算出的结果。
+
 命令输出应提供机器可读 JSON，便于新 Codex 对话定位失败片段、重复区间、缓存命中
 和产物路径，而不是解析控制台自然语言。
 
@@ -355,7 +401,8 @@ py -3.12 recap_cli.py rollback-project --project <project.json> --version <versi
 - 不修改原始素材，不提交大型缓存、模型或成片。
 - 不把原型的素材路径、输出路径、虚拟环境路径或具体剧名写死到正式模块。
 - 保持现有字幕提取、翻译、视频处理和下游返回结构不变，优先增量添加。
-- 不把解说功能接入字幕翻译 Agent bridge；两者生命周期和任务契约不同。
+- 不复用字幕翻译响应格式；网页网关的解说 Agent 适配层必须使用独立的
+  `RECAP_JOB` / `recap_plan` 生命周期和任务契约。
 - `CODEX_RECAP_INIT.md` 是外部 Codex 对话初始化入口，不是运行时代码配置。
 
 ## 迁移验收标准

@@ -1,19 +1,32 @@
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
 import video_dedup
+import recap.renderer as recap_renderer
+from recap.cli import build_parser, dispatch
 from recap.models import RecapProject, RecapSegment, VoiceProfile, now_iso
 from recap.loudness import measure_loudness
 from recap.project_store import create_project, diff_versions, load_project, rollback_project, update_segment
-from recap.renderer import mix_audio_command, render_project
+from recap.renderer import _caption_filters, mix_audio_command, render_project
+from recap.renderer import resolve_tts_engine, resolved_target_loudness
+from recap.narration_text import normalize_narration_text, split_caption_sentences
+from recap.pacing import (
+    build_duration_budget,
+    count_speech_units,
+    fitted_narration_seconds,
+    segment_pacing,
+)
 from recap.timeline import affected_segments, validate_source_intervals
+from recap.tts_routing import explicit_engines_for_language, resolve_tts_engine as resolve_language_tts_engine
 from recap.visual_dedup import detect_duplicates, validate_rendered_visual_uniqueness
-from recap.voice_library import VoiceLibrary, voice_cache_key, voice_cache_path
+from recap.voice_library import VoiceLibrary, engines_for_language, voice_cache_key, voice_cache_path
 
 
 def project_for(root: Path, segments: list[RecapSegment], pattern: str = "ep{episode}.mp4") -> RecapProject:
@@ -25,6 +38,134 @@ def project_for(root: Path, segments: list[RecapSegment], pattern: str = "ep{epi
 
 
 class RecapTests(unittest.TestCase):
+    def test_standard_arabic_budget_uses_measured_words_per_second(self):
+        budget = build_duration_budget(
+            preset_name="standard",
+            target_duration_seconds=588,
+            target_language="Arabic",
+            narration_speed=1.0,
+        )
+        self.assertEqual(budget["speech_rate"]["unit"], "wps")
+        self.assertEqual(budget["speech_rate"]["value"], 2.0)
+        self.assertEqual(budget["narration_duration_seconds"], 147.0)
+        self.assertEqual(budget["target_narration_units"], 265)
+
+    def test_language_specific_speech_units(self):
+        self.assertEqual(count_speech_units("قرار واحد غيّر كل شيء.", "Arabic"), 5)
+        self.assertEqual(count_speech_units("One decision changed everything.", "English"), 4)
+        self.assertEqual(count_speech_units("一个决定改变一切", "Chinese"), 8)
+
+    def test_segment_pacing_flags_underfilled_narration(self):
+        pacing = segment_pacing(
+            text="في الزنزانة تحاول إليزابيث تحطيم ماغي وتدفع الغيرة إلى ذروتها",
+            duration_seconds=24,
+            target_language="Arabic",
+            preset_name="standard",
+        )
+        self.assertEqual(pacing["status"], "short")
+        self.assertLess(pacing["estimated_occupancy"], 0.5)
+
+    def test_trim_to_voice_uses_real_wav_duration_and_tail(self):
+        self.assertAlmostEqual(
+            fitted_narration_seconds(
+                planned_seconds=24,
+                voice_seconds=8.45,
+                lead_in_seconds=0.3,
+                tail_seconds=0.8,
+                fit_policy="trim_to_voice",
+            ),
+            9.55,
+        )
+        self.assertEqual(
+            fitted_narration_seconds(
+                planned_seconds=24,
+                voice_seconds=8.45,
+                lead_in_seconds=0.3,
+                tail_seconds=0.8,
+                fit_policy="preserve_window",
+            ),
+            24,
+        )
+
+    def test_cancellable_runner_terminates_active_child_process(self):
+        started = time.monotonic()
+        token = recap_renderer._CANCELLED.set(lambda: time.monotonic() - started > 0.2)
+        try:
+            with self.assertRaises(recap_renderer.RenderCancelled):
+                recap_renderer._run(
+                    [sys.executable, "-c", "import time; time.sleep(30)"],
+                    text=True,
+                )
+        finally:
+            recap_renderer._CANCELLED.reset(token)
+        self.assertLess(time.monotonic() - started, 5.0)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg is required")
+    def test_caption_filter_works_when_project_path_contains_apostrophe(self):
+        with tempfile.TemporaryDirectory(prefix="recap's-") as temp:
+            caption_dir = Path(temp) / "captions"
+            caption_dir.mkdir()
+            project = project_for(Path(temp), [])
+            filters = _caption_filters("Hello world.", caption_dir, "seg-001", 1.0, 0.0, project)
+            result = subprocess.run(
+                [
+                    shutil.which("ffmpeg"), "-v", "error",
+                    "-f", "lavfi", "-i", "color=s=160x120:d=1",
+                    "-vf", filters[0], "-frames:v", "1", "-f", "null", "-",
+                ],
+                cwd=caption_dir,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_arabic_routing_exposes_exactly_two_tts_models(self):
+        self.assertEqual(
+            explicit_engines_for_language("Arabic"),
+            ("fish_s2", "chatterbox_v3"),
+        )
+        self.assertEqual(resolve_language_tts_engine("Arabic", "auto"), "fish_s2")
+        with self.assertRaisesRegex(ValueError, "Qwen3 TTS 不支持阿拉伯语"):
+            resolve_language_tts_engine("Arabic", "qwen3_tts")
+
+    def test_create_project_defaults_to_half_of_source_duration(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            args = build_parser().parse_args([
+                "create-project", "--project", str(root / "project.json"),
+                "--project-id", "ratio-test", "--source", str(root), "--output", str(root / "out"),
+            ])
+            with (
+                mock.patch("recap.cli.video_dedup.find_binary", side_effect=lambda name, explicit=None: name),
+                mock.patch("recap.cli.inspect_sources", return_value={
+                    "status": "ok", "episode_count": 3, "total_duration": 900.0, "episodes": [],
+                }) as inspect,
+            ):
+                result = dispatch(args)
+            saved = load_project(root / "project.json")
+        self.assertEqual(result["target_duration_seconds"], 450.0)
+        self.assertEqual(saved.target_duration_seconds, 450.0)
+        self.assertEqual(saved.rendering["target_duration_ratio"], 0.5)
+        self.assertEqual(inspect.call_args.args[2], "*第*集.mp4")
+
+    def test_explicit_target_duration_overrides_ratio_calculation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            args = build_parser().parse_args([
+                "create-project", "--project", str(root / "project.json"),
+                "--project-id", "fixed-test", "--source", str(root), "--output", str(root / "out"),
+                "--target-duration", "321",
+            ])
+            with (
+                mock.patch("recap.cli.video_dedup.find_binary", side_effect=lambda name, explicit=None: name),
+                mock.patch("recap.cli.inspect_sources") as inspect,
+            ):
+                result = dispatch(args)
+            saved = load_project(root / "project.json")
+        self.assertEqual(result["target_duration_seconds"], 321.0)
+        self.assertEqual(saved.target_duration_seconds, 321.0)
+        inspect.assert_not_called()
+
     def test_same_episode_overlap_is_rejected_with_segment_ids(self):
         project = project_for(Path("C:/source"), [
             RecapSegment("seg-a", 1, 0, 5, "narration", "A"),
@@ -120,6 +261,71 @@ class RecapTests(unittest.TestCase):
         second = voice_cache_key(profile, "One line", "English", 1.0)
         self.assertEqual(first, second)
 
+    def test_voice_cache_changes_when_reference_audio_changes(self):
+        profile = VoiceLibrary().get("calm_male")
+        with tempfile.TemporaryDirectory() as temp:
+            reference = Path(temp) / "reference.wav"
+            reference.write_bytes(b"voice-a")
+            first = voice_cache_key(
+                profile, "One line", "English", 1.0,
+                reference_audio_path=reference,
+            )
+            reference.write_bytes(b"voice-b")
+            second = voice_cache_key(
+                profile, "One line", "English", 1.0,
+                reference_audio_path=reference,
+            )
+        self.assertNotEqual(first, second)
+
+    def test_voice_library_has_four_male_and_four_female_per_language(self):
+        library = VoiceLibrary()
+        for language in ("English", "Arabic"):
+            profiles = library.compatible(language)
+            self.assertEqual(len(profiles), 14)
+            self.assertEqual(sum(item.gender == "female" for item in profiles), 7)
+            self.assertEqual(sum(item.gender == "male" for item in profiles), 7)
+            self.assertEqual(sum(item.age_group == "child_role" for item in profiles), 2)
+
+    def test_voice_library_hides_unapproved_profiles(self):
+        library = VoiceLibrary()
+        profile = library.get("calm_female")
+        self.assertEqual(profile.review_status, "approved")
+        self.assertIn(profile, library.compatible("English"))
+
+    def test_arabic_auto_engine_uses_fish_and_qwen_is_rejected(self):
+        project = project_for(Path("C:/source"), [])
+        project.target_language = "Arabic"
+        project.tts_engine = "auto"
+        self.assertEqual(resolve_tts_engine(project), "fish_s2")
+        project.tts_engine = "qwen3_tts"
+        with self.assertRaisesRegex(ValueError, "不支持阿拉伯语"):
+            resolve_tts_engine(project)
+
+    def test_language_specific_engine_options_exclude_qwen_from_arabic(self):
+        arabic = {item["value"] for item in engines_for_language("Arabic")}
+        english = {item["value"] for item in engines_for_language("English")}
+        self.assertNotIn("qwen3_tts", arabic)
+        self.assertIn("qwen3_tts", english)
+        self.assertIn("fish_s2", arabic)
+        self.assertIn("chatterbox_v3", arabic)
+
+    def test_keep_original_loudness_does_not_measure_or_normalize(self):
+        project = project_for(Path("C:/source"), [])
+        project.narration_target_loudness = "keep_original"
+        with mock.patch("recap.renderer.measure_project_loudness") as measure:
+            target, report = resolved_target_loudness(project, "ffmpeg", "ffprobe")
+        self.assertIsNone(target)
+        self.assertEqual(report["status"], "preserved")
+        measure.assert_not_called()
+
+    def test_arabic_normalization_preserves_logical_order_and_removes_bidi_controls(self):
+        source = "\u202eفي عالمٍ جديد\r\nتبدأ الحكاية؟\u202c"
+        normalized = normalize_narration_text(source, "Arabic")
+        self.assertNotIn("\u202e", normalized)
+        self.assertNotIn("\n", normalized)
+        self.assertTrue(normalized.startswith("في عالم"))
+        self.assertTrue(split_caption_sentences(normalized, "Arabic")[-1].endswith("تبدأ الحكاية؟"))
+
     @unittest.skipUnless(shutil.which("ffprobe"), "FFprobe is required")
     def test_bundled_voice_previews_are_ten_to_fifteen_seconds(self):
         library = VoiceLibrary()
@@ -204,7 +410,14 @@ class RecapTests(unittest.TestCase):
             project = project_for(root, [narration, original])
             library = VoiceLibrary()
             profile = library.get(project.voice_id)
-            key = voice_cache_key(profile, narration.narration_text, project.target_language, project.narration_speed)
+            key = voice_cache_key(
+                profile,
+                narration.narration_text,
+                project.target_language,
+                project.narration_speed,
+                {"tts_engine": "qwen3_tts", **profile.generation_parameters},
+                reference_audio_path=library.resolve_asset(profile.reference_audio),
+            )
             cached_voice = voice_cache_path(root / "out" / ".recap_cache" / project.project_id / "voice", project.project_id, profile, key)
             cached_voice.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(library.resolve_asset(profile.reference_audio), cached_voice)

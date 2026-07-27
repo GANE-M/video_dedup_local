@@ -4,16 +4,26 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
-import textwrap
+import time
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import video_dedup
 
 from .loudness import duration_weighted_loudness, measure_loudness, normalize_narration
-from .models import RecapProject, RecapSegment, stable_hash
+from .models import RecapProject, RecapSegment, natural_path_key, stable_hash
+from .narration_text import (
+    canonical_language,
+    normalize_narration_text,
+    split_caption_sentences,
+    wrap_caption,
+)
+from .pacing import fitted_narration_seconds, get_preset
+from .tts_routing import resolve_tts_engine as resolve_language_tts_engine
 from .project_store import atomic_write_json
 from .timeline import validate_source_intervals
 from .visual_dedup import validate_rendered_visual_uniqueness
@@ -22,14 +32,72 @@ from .voice_library import VoiceLibrary, voice_cache_key, voice_cache_path
 
 RENDER_CACHE_VERSION = 1
 VIDEO_SUFFIXES = video_dedup.VIDEO_SUFFIXES
+_CANCELLED: ContextVar[Callable[[], bool] | None] = ContextVar("recap_cancelled", default=None)
+_PROCESS_OBSERVER: ContextVar[Callable[[int | None, str, float | None], None] | None] = ContextVar(
+    "recap_process_observer", default=None
+)
 
 
-def _run(command: list[str], *, text: bool = False, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
-    result = subprocess.run(
-        command, capture_output=True, text=text,
+class RenderCancelled(RuntimeError):
+    pass
+
+
+def _terminate_tree(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            capture_output=True,
+            **video_dedup.hidden_subprocess_kwargs(),
+        )
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+
+
+def _run(
+    command: list[str],
+    *,
+    text: bool = False,
+    env: dict[str, str] | None = None,
+    cwd: Path | None = None,
+) -> subprocess.CompletedProcess:
+    process_kwargs = video_dedup.hidden_subprocess_kwargs()
+    if os.name != "nt":
+        process_kwargs["start_new_session"] = True
+    process = subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=text,
         encoding="utf-8" if text else None, errors="replace" if text else None,
-        env=env, **video_dedup.hidden_subprocess_kwargs(),
+        env=env, cwd=cwd, **process_kwargs,
     )
+    observer = _PROCESS_OBSERVER.get()
+    if observer:
+        observer(process.pid, str(Path(command[0]).resolve()), time.time())
+    stdout = stderr = None
+    try:
+        while process.poll() is None:
+            cancelled = _CANCELLED.get()
+            if cancelled and cancelled():
+                _terminate_tree(process)
+                process.communicate()
+                raise RenderCancelled("解说渲染已由用户停止")
+            try:
+                stdout, stderr = process.communicate(timeout=0.25)
+            except subprocess.TimeoutExpired:
+                continue
+        if stdout is None and stderr is None:
+            stdout, stderr = process.communicate()
+    finally:
+        if observer:
+            observer(None, "", None)
+    result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
     if result.returncode:
         stderr = result.stderr if text else result.stderr.decode("utf-8", errors="replace")
         raise RuntimeError(f"command failed ({result.returncode}): {' '.join(command[:8])}\n{stderr[-4000:]}")
@@ -44,7 +112,10 @@ def inspect_sources(source_root: Path, ffprobe: str, pattern: str = "*.mp4") -> 
     root = Path(source_root).resolve()
     if not root.is_dir():
         raise FileNotFoundError(f"source directory does not exist: {root}")
-    files = sorted(path for path in root.glob(pattern) if path.suffix.casefold() in VIDEO_SUFFIXES)
+    files = sorted(
+        (path for path in root.glob(pattern) if path.suffix.casefold() in VIDEO_SUFFIXES),
+        key=natural_path_key,
+    )
     episodes = []
     for index, path in enumerate(files, 1):
         info = probe(path, ffprobe)
@@ -73,17 +144,25 @@ def measure_project_loudness(project: RecapProject, ffmpeg: str, ffprobe: str) -
     return {"status": "ok", "project_id": project.project_id, "integrated_lufs": round(weighted, 3), "episodes": measurements, "warnings": warnings}
 
 
-def resolved_target_loudness(project: RecapProject, ffmpeg: str, ffprobe: str) -> tuple[float, dict[str, Any]]:
+def resolved_target_loudness(project: RecapProject, ffmpeg: str, ffprobe: str) -> tuple[float | None, dict[str, Any]]:
     configured = project.narration_target_loudness
     if isinstance(configured, (int, float)):
         value = float(configured)
         return value, {"status": "configured", "integrated_lufs": value, "episodes": [], "warnings": []}
     text = str(configured).strip().casefold()
+    if text in {"", "keep", "keep_original", "preserve", "none", "off"}:
+        return None, {
+            "status": "preserved",
+            "mode": "keep_original",
+            "integrated_lufs": None,
+            "episodes": [],
+            "warnings": [],
+        }
     try:
         return float(text), {"status": "configured", "integrated_lufs": float(text), "episodes": [], "warnings": []}
     except ValueError:
         if text not in {"match_source", "match_source_program", "auto"}:
-            raise ValueError("narration_target_loudness must be a LUFS number or match_source_program")
+            raise ValueError("narration_target_loudness must be keep_original, a LUFS number, or match_source_program")
     report = measure_project_loudness(project, ffmpeg, ffprobe)
     return float(report["integrated_lufs"]), report
 
@@ -93,6 +172,24 @@ def _qwen_python(project: RecapProject) -> Path:
     if configured:
         return Path(configured).expanduser().resolve()
     candidate = Path(__file__).resolve().parents[2] / ".qwen-tts-lab" / ".venv" / "Scripts" / "python.exe"
+    return candidate.resolve() if candidate.is_file() else Path(sys.executable).resolve()
+
+
+def resolve_tts_engine(project: RecapProject) -> str:
+    return resolve_language_tts_engine(project.target_language, project.tts_engine)
+
+
+def _tts_python(project: RecapProject, engine: str) -> Path:
+    root = Path(__file__).resolve().parents[2]
+    configured = str(project.rendering.get(f"{engine}_python", "")).strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    candidates = {
+        "fish_s2": root / ".tts-envs" / "fish-s2" / "Scripts" / "python.exe",
+        "chatterbox_v3": root / ".tts-envs" / "chatterbox" / "Scripts" / "python.exe",
+        "qwen3_tts": root / ".qwen-tts-lab" / ".venv" / "Scripts" / "python.exe",
+    }
+    candidate = candidates[engine]
     return candidate.resolve() if candidate.is_file() else Path(sys.executable).resolve()
 
 
@@ -130,6 +227,13 @@ def generate_voice_files(
     cache_root: Path, payload_dir: Path,
 ) -> tuple[dict[str, Path], list[str], list[str]]:
     profile = library.get(project.voice_id)
+    engine = resolve_tts_engine(project)
+    if profile.languages and canonical_language(project.target_language) not in {
+        canonical_language(item) for item in profile.languages
+    }:
+        raise ValueError(f"声纹 {profile.display_name} 不支持目标语言 {project.target_language}")
+    if profile.allowed_engines and engine not in profile.allowed_engines:
+        raise ValueError(f"声纹 {profile.display_name} 不支持 {engine}")
     errors = library.validate_assets(profile.voice_id)
     if errors:
         raise FileNotFoundError("; ".join(errors))
@@ -139,22 +243,30 @@ def generate_voice_files(
     for segment in segments:
         if segment.mode != "narration":
             continue
-        key = voice_cache_key(profile, segment.narration_text, project.target_language, project.narration_speed)
+        normalized_text = normalize_narration_text(segment.narration_text, project.target_language)
+        key = voice_cache_key(
+            profile,
+            normalized_text,
+            canonical_language(project.target_language),
+            project.narration_speed,
+            {"tts_engine": engine, **profile.generation_parameters},
+            reference_audio_path=library.resolve_asset(profile.reference_audio),
+        )
         target = voice_cache_path(cache_root, project.project_id, profile, key)
         outputs[segment.segment_id] = target
         if target.is_file():
             hits.append(segment.segment_id)
         else:
             missing_items.append({
-                "segment_id": segment.segment_id, "text": segment.narration_text,
-                "language": project.target_language, "output": str(target),
+                "segment_id": segment.segment_id, "text": normalized_text,
+                "language": canonical_language(project.target_language), "output": str(target),
             })
     if missing_items:
-        qwen_python = _qwen_python(project)
-        if not qwen_python.is_file():
-            raise FileNotFoundError(f"Qwen Python does not exist: {qwen_python}")
+        tts_python = _tts_python(project, engine)
+        if not tts_python.is_file():
+            raise FileNotFoundError(f"{engine} Python does not exist: {tts_python}")
         payload_dir.mkdir(parents=True, exist_ok=True)
-        payload_path = payload_dir / "qwen_voice_request.json"
+        payload_path = payload_dir / f"{engine}_voice_request.json"
         payload = {
             "profile": {
                 **profile.to_dict(),
@@ -162,14 +274,32 @@ def generate_voice_files(
             },
             "items": missing_items,
         }
+        module = {
+            "fish_s2": "recap.fish_s2_tts",
+            "chatterbox_v3": "recap.chatterbox_tts",
+            "qwen3_tts": "recap.qwen_tts",
+        }[engine]
+        if engine == "fish_s2":
+            root = Path(__file__).resolve().parents[2]
+            payload["checkpoint"] = str(
+                Path(project.rendering.get("fish_s2_checkpoint") or root / ".model-cache" / "fish-s2-pro-nf4").resolve()
+            )
+            payload["max_seq_len"] = int(project.rendering.get("fish_s2_max_seq_len", 4096))
+            for key in ("temperature", "top_p", "top_k"):
+                if key in profile.generation_parameters:
+                    payload[key] = profile.generation_parameters[key]
         atomic_write_json(payload_path, payload)
         env = os.environ.copy()
         project_root = str(Path(__file__).resolve().parents[1])
         env["PYTHONPATH"] = project_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
-        result = _run([str(qwen_python), "-m", "recap.qwen_tts", str(payload_path)], text=True, env=env)
+        if engine == "chatterbox_v3" and bool(project.rendering.get("chatterbox_offline", True)):
+            # The model is installed locally with the application. Avoid a slow
+            # Hugging Face connectivity check on every folder task.
+            env["HF_HUB_OFFLINE"] = "1"
+        result = _run([str(tts_python), "-m", module, str(payload_path)], text=True, env=env)
         response = json.loads(result.stdout.strip().splitlines()[-1])
         if response.get("status") != "ok":
-            raise RuntimeError(f"Qwen voice generation failed: {response}")
+            raise RuntimeError(f"{engine} voice generation failed: {response}")
     return outputs, hits, [item["segment_id"] for item in missing_items]
 
 
@@ -178,7 +308,7 @@ def _escape_filter_path(path: Path) -> str:
 
 
 def _caption_filters(text: str, caption_dir: Path, segment_id: str, voice_length: float, lead_in: float, project: RecapProject) -> list[str]:
-    sentences = [item.strip() for item in re.split(r"(?<=[.!?。！？])\s+", text) if item.strip()] or [text]
+    sentences = split_caption_sentences(text, project.target_language)
     weights = [max(1, len(re.findall(r"\w+", sentence, flags=re.UNICODE))) for sentence in sentences]
     total = sum(weights)
     running = lead_in
@@ -190,10 +320,14 @@ def _caption_filters(text: str, caption_dir: Path, segment_id: str, voice_length
     for number, (sentence, weight) in enumerate(zip(sentences, weights), 1):
         end = lead_in + voice_length if number == len(sentences) else running + voice_length * weight / total
         text_file = caption_dir / f"{segment_id}_{number}.txt"
-        text_file.write_text(textwrap.fill(sentence, width=wrap_width), encoding="utf-8")
+        text_file.write_text(wrap_caption(sentence, width=wrap_width), encoding="utf-8")
+        # FFmpeg's filter parser cannot reliably represent an apostrophe inside
+        # a single-quoted textfile path. Run FFmpeg with the caption directory
+        # as its cwd and keep only the safe basename in the filter graph.
+        textfile_filter_value = text_file.name
         filters.append(
-            f"drawtext=fontfile='{_escape_filter_path(Path(font_file))}':textfile='{_escape_filter_path(text_file)}':"
-            f"fontcolor=white:fontsize={font_size}:line_spacing=8:borderw=4:bordercolor=black@0.85:"
+            f"drawtext=fontfile='{_escape_filter_path(Path(font_file))}':textfile='{textfile_filter_value}':"
+            f"text_shaping=1:fontcolor=white:fontsize={font_size}:line_spacing=8:borderw=4:bordercolor=black@0.85:"
             f"x=(w-text_w)/2:y=h*{caption_y:.4f}:box=1:boxcolor=black@0.25:boxborderw=18:"
             f"enable='between(t\\,{running:.3f}\\,{end:.3f})'"
         )
@@ -210,28 +344,40 @@ def _video_filter(project: RecapProject, info: dict[str, Any]) -> str:
 
 
 def _encoder_args(ffmpeg: str, project: RecapProject) -> list[str]:
-    preference = str(project.rendering.get("hardware_acceleration", "auto"))
+    preference = str(project.rendering.get("hardware_acceleration", "nvidia"))
     try:
         mode = video_dedup.resolve_hardware_acceleration(ffmpeg, preference)
     except ValueError:
         mode = "cpu"
     encoder = video_dedup.video_encoder_name(mode)
     if encoder == "libx264":
-        return ["-c:v", encoder, "-preset", str(project.rendering.get("encoder_preset", "medium")), "-crf", str(project.rendering.get("crf", 21))]
-    return ["-c:v", encoder, "-preset", "p5", "-cq", str(project.rendering.get("crf", 21)), "-b:v", "0"]
+        return ["-c:v", encoder, "-preset", str(project.rendering.get("encoder_preset", "medium")), "-crf", str(project.rendering.get("crf", 23))]
+    return ["-c:v", encoder, "-preset", "p5", "-cq", str(project.rendering.get("crf", 23)), "-b:v", "0"]
 
 
 def render_segment(
     project: RecapProject, segment: RecapSegment, index: int, previous_mode: str | None,
-    next_mode: str | None, voice_path: Path | None, target_lufs: float,
+    next_mode: str | None, voice_path: Path | None, target_lufs: float | None,
     work_root: Path, cache_root: Path, ffmpeg: str, ffprobe: str,
 ) -> tuple[dict[str, Any], bool]:
     source = project.episode_path(segment.episode)
     info = probe(source, ffprobe)
-    lead_in = float(segment.rendering.get("narration_lead_in", project.rendering.get("narration_lead_in", 0.5))) if previous_mode == "original" else 0.0
+    pacing_preset = get_preset(project.narration_preset, default="legacy")
+    if project.narration_preset == "legacy":
+        default_lead_in = 0.5 if previous_mode == "original" else 0.0
+    else:
+        default_lead_in = pacing_preset.lead_in_seconds
+    lead_in = float(
+        segment.rendering.get(
+            "narration_lead_in",
+            project.rendering.get("narration_lead_in", default_lead_in),
+        )
+    )
     audio_tail = float(segment.rendering.get("original_audio_tail", project.rendering.get("original_audio_tail", 0.5))) if next_mode == "narration" else 0.0
     voice_identity = ""
     voice_length = 0.0
+    tail_seconds = 0.0
+    fit_policy = ""
     normalized_voice = None
     if segment.mode == "narration":
         if voice_path is None or not voice_path.is_file():
@@ -242,7 +388,9 @@ def render_segment(
         "render_cache_version": RENDER_CACHE_VERSION,
         "source_size": source_stat.st_size, "source_mtime_ns": source_stat.st_mtime_ns,
         "previous_mode": previous_mode, "next_mode": next_mode,
-        "project_rendering": project.rendering, "voice": voice_identity,
+        "project_rendering": project.rendering,
+        "narration_preset": project.narration_preset,
+        "voice": voice_identity,
     })
     cached = cache_root / "segments" / f"{segment.segment_id}-{cache_key}.mp4"
     rendered = work_root / "segments" / f"{index:03d}-{segment.segment_id}-{segment.mode}.mp4"
@@ -277,22 +425,65 @@ def render_segment(
         _run(command)
         video_seconds = base_duration
     else:
-        normalized_voice = work_root / "voice" / f"{segment.segment_id}.wav"
-        loudness = normalize_narration(voice_path, normalized_voice, ffmpeg, target_lufs)
+        if target_lufs is None:
+            normalized_voice = voice_path
+            loudness = {"status": "preserved", "mode": "keep_original"}
+        else:
+            normalized_voice = work_root / "voice" / f"{segment.segment_id}.wav"
+            loudness = normalize_narration(voice_path, normalized_voice, ffmpeg, target_lufs)
         raw_voice_seconds = probe_audio_duration(normalized_voice, ffprobe)
         speed = max(0.5, min(2.0, float(project.narration_speed)))
         voice_length = raw_voice_seconds / speed
-        video_seconds = max(base_duration, lead_in + voice_length)
-        captions = _caption_filters(segment.narration_text, work_root / "captions", segment.segment_id, voice_length, lead_in, project)
+        fit_policy = str(
+            segment.rendering.get(
+                "narration_fit_policy",
+                project.rendering.get(
+                    "narration_fit_policy", pacing_preset.fit_policy
+                ),
+            )
+        ).strip().casefold()
+        tail_seconds = max(
+            0.0,
+            float(
+                segment.rendering.get(
+                    "narration_tail_seconds",
+                    project.rendering.get(
+                        "narration_tail_seconds", pacing_preset.tail_seconds
+                    ),
+                )
+            ),
+        )
+        hold_visual = bool(segment.rendering.get("allow_visual_hold", False))
+        # A narration interval is a pool of candidate visuals, not a mandatory
+        # silent hold. Keep the full interval only for legacy projects or an
+        # explicitly justified visual hold.
+        video_seconds = fitted_narration_seconds(
+            planned_seconds=base_duration,
+            voice_seconds=voice_length,
+            lead_in_seconds=lead_in,
+            tail_seconds=tail_seconds,
+            fit_policy=(
+                "preserve_window"
+                if project.narration_preset == "legacy"
+                else fit_policy
+            ),
+            hold_visual=hold_visual,
+        )
+        caption_dir = work_root / "captions"
+        captions = _caption_filters(
+            segment.narration_text, caption_dir, segment.segment_id, voice_length, lead_in, project
+        )
         vf = ",".join([common_vf, *captions, f"trim=duration={video_seconds:.3f}", "setpts=PTS-STARTPTS"])
         audio_chain = [f"atempo={speed:.6f}"] if abs(speed - 1.0) > 1e-6 else []
-        audio_chain.extend(["alimiter=limit=0.85:level=false", f"adelay={int(lead_in * 1000)}:all=1", f"apad=pad_dur={video_seconds:.3f}", f"atrim=duration={video_seconds:.3f}", "asetpts=PTS-STARTPTS"])
+        if target_lufs is not None:
+            audio_chain.append("alimiter=limit=0.85:level=false")
+        audio_chain.extend([f"adelay={int(lead_in * 1000)}:all=1", f"apad=pad_dur={video_seconds:.3f}", f"atrim=duration={video_seconds:.3f}", "asetpts=PTS-STARTPTS"])
         command = [
             ffmpeg, "-y", "-hide_banner", "-stream_loop", "-1", "-ss", f"{segment.source_start:.3f}", "-t", f"{video_seconds:.3f}", "-i", str(source), "-i", str(normalized_voice),
             "-filter_complex", f"[0:v]{vf}[v];[1:a]{','.join(audio_chain)}[a]", "-map", "[v]", "-map", "[a]",
             *encoder_args, "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "192k", str(rendered),
         ]
-        _run(command)
+        _run(command, cwd=caption_dir)
         segment.rendering["last_loudness"] = loudness
 
     cached.parent.mkdir(parents=True, exist_ok=True)
@@ -302,6 +493,10 @@ def render_segment(
         "segment_id": segment.segment_id, "episode": segment.episode, "mode": segment.mode,
         "source": str(source), "source_start": segment.source_start, "source_end": segment.source_end,
         "video_seconds": video_seconds, "voice_seconds": voice_length,
+        "planned_video_seconds": base_duration,
+        "narration_lead_in_seconds": lead_in if segment.mode == "narration" else 0.0,
+        "narration_tail_seconds": tail_seconds if segment.mode == "narration" else 0.0,
+        "narration_fit_policy": fit_policy if segment.mode == "narration" else "",
         "audio_tail_seconds": audio_tail, "rendered_path": str(rendered),
         "cache_key": cache_key, "cache_hit": False, "purpose": segment.purpose,
     }, False)
@@ -362,6 +557,25 @@ def decode_check(path: Path, ffmpeg: str) -> None:
 def render_project(
     project: RecapProject, *, final: bool = True, only_segment_id: str | None = None,
     ffmpeg: str | None = None, ffprobe: str | None = None, library_path: Path | None = None,
+    cancelled: Callable[[], bool] | None = None,
+    process_observer: Callable[[int | None, str, float | None], None] | None = None,
+) -> dict[str, Any]:
+    token = _CANCELLED.set(cancelled)
+    process_token = _PROCESS_OBSERVER.set(process_observer)
+    try:
+        return _render_project(project, final, only_segment_id, ffmpeg, ffprobe, library_path)
+    finally:
+        _PROCESS_OBSERVER.reset(process_token)
+        _CANCELLED.reset(token)
+
+
+def _render_project(
+    project: RecapProject,
+    final: bool,
+    only_segment_id: str | None,
+    ffmpeg: str | None,
+    ffprobe: str | None,
+    library_path: Path | None,
 ) -> dict[str, Any]:
     ffmpeg = video_dedup.find_binary("ffmpeg", ffmpeg)
     ffprobe = video_dedup.find_binary("ffprobe", ffprobe)
@@ -379,7 +593,6 @@ def render_project(
         selected = [item for item in project.segments if item.segment_id == only_segment_id]
         if not selected:
             raise KeyError(f"unknown segment_id: {only_segment_id}")
-    # A local render must not generate unrelated missing narration takes.
     voice_paths, voice_hits, voice_generated = generate_voice_files(
         project, selected, library, cache_root / "voice", version_root
     )
@@ -436,7 +649,11 @@ def render_project(
     }
     actual_durations = {key: probe_audio_duration(Path(path), ffprobe) for key, path in outputs.items() if key in {"narration_master", "original_master", "complete_audio_master"}}
     actual_durations["video_master_silent"] = probe(video_master, ffprobe)["duration"]
-    narration_loudness = measure_loudness(narration_master, ffmpeg, target_lufs) if any(item.mode == "narration" for item in project.segments) else None
+    narration_loudness = (
+        measure_loudness(narration_master, ffmpeg, target_lufs if target_lufs is not None else -18.0)
+        if any(item.mode == "narration" for item in project.segments)
+        else None
+    )
     return {
         "status": "ok", "project_id": project.project_id, "version": project.current_version,
         "affected_segments": [item.segment_id for item in project.segments],

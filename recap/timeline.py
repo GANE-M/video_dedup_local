@@ -16,6 +16,8 @@ def validate_project_structure(project: RecapProject) -> list[dict[str, Any]]:
         errors.append({"code": "missing_project_id", "message": "project_id is required"})
     if not project.project_name:
         errors.append({"code": "missing_project_name", "message": "project_name is required"})
+    if project.target_duration_seconds <= 0:
+        errors.append({"code": "invalid_target_duration", "message": "target_duration_seconds must be greater than 0"})
     if not project.segments:
         errors.append({"code": "empty_timeline", "message": "segments cannot be empty"})
     seen: set[str] = set()

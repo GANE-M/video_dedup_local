@@ -1,0 +1,132 @@
+{
+  "results": [
+    {
+      "voice_id": "calm_female",
+      "language": "en",
+      "transcript": "A quiet decision can change an entire life. Here is how the story truly began, why no one recognized the warning signs, and how one final choice changed everything for the people caught in the middle.",
+      "expected": "A quiet decision can change an entire life. Here is how the story truly began, why no one recognized the warning signs, and how one final choice changed everything for the people caught in the middle.",
+      "similarity": 1.0,
+      "language_probability": 1
+    },
+    {
+      "voice_id": "en_bright_female",
+      "language": "en",
+      "transcript": "One decision changed everything, here is how the secret was discovered, why nobody saw the danger coming, and what happened when the truth finally came out for everyone involved.",
+      "expected": "One decision changed everything. Here is how the secret was discovered, why nobody saw the danger coming, and what happened when the truth finally came out for everyone involved.",
+      "similarity": 1.0,
+      "language_probability": 1
+    },
+    {
+      "voice_id": "en_dramatic_female",
+      "language": "en",
+      "transcript": "One decision changed everything. Here is how the secret was discovered, why nobody saw the danger coming, and what happened when the truth finally came out for everyone involved.",
+      "expected": "One decision changed everything. Here is how the secret was discovered, why nobody saw the danger coming, and what happened when the truth finally came out for everyone involved.",
+      "similarity": 1.0,
+      "language_probability": 1
+    },
+    {
+      "voice_id": "en_mature_female",
+      "language": "en",
+      "transcript": "One decision changed everything. Here is how the secret was discovered. Why nobody saw the danger coming, and what happened when the truth finally came out for everyone involved.",
+      "expected": "One decision changed everything. Here is how the secret was discovered, why nobody saw the danger coming, and what happened when the truth finally came out for everyone involved.",
+      "similarity": 1.0,
+      "language_probability": 1
+    },
+    {
+      "voice_id": "calm_male",
+      "language": "en",
+      "transcript": "A quiet decision can change an entire life. Here is how the story truly began. Why no one recognized the warning signs and how one final choice changed everything for the people caught in the middle.",
+      "expected": "A quiet decision can change an entire life. Here is how the story truly began, why no one recognized the warning signs, and how one final choice changed everything for the people caught in the middle.",
+      "similarity": 1.0,
+      "language_probability": 1
+    },
+    {
+      "voice_id": "en_young_male",
+      "language": "en",
+      "transcript": "One decision changed everything. Here's how the secret was discovered, why nobody saw the danger coming, and what happened when the truth finally came out for everyone involved.",
+      "expected": "One decision changed everything. Here is how the secret was discovered, why nobody saw the danger coming, and what happened when the truth finally came out for everyone involved.",
+      "similarity": 0.997,
+      "language_probability": 1
+    },
+    {
+      "voice_id": "en_deep_male",
+      "language": "en",
+      "transcript": "One decision changed everything. Here is how the secret was discovered, why nobody saw the danger coming, and what happened when the truth finally came out for everyone involved.",
+      "expected": "One decision changed everything. Here is how the secret was discovered, why nobody saw the danger coming, and what happened when the truth finally came out for everyone involved.",
+      "similarity": 1.0,
+      "language_probability": 1
+    },
+    {
+      "voice_id": "en_urgent_male",
+      "language": "en",
+      "transcript": "One decision changed everything. Here's how the secret was discovered, why nobody saw the danger coming, and what happened when the truth finally came out for everyone involved.",
+      "expected": "One decision changed everything. Here is how the secret was discovered, why nobody saw the danger coming, and what happened when the truth finally came out for everyone involved.",
+      "similarity": 0.997,
+      "language_probability": 1
+    },
+    {
+      "voice_id": "ar_fish_female",
+      "language": "ar",
+      "transcript": "في كل قصة سر لا يراه أحد واليوم نكشف الحقيقة التي غخارت حياة الجميع ونروي كيف بدأ الخطر قبل أن يدرك الأبطال ما كان ينتظرهم",
+      "expected": "في كل قصة سر لا يراه أحد. واليوم نكشف الحقيقة التي غيّرت حياة الجميع، ونروي كيف بدأ الخطر قبل أن يدرك الأبطال ما كان ينتظرهم.",
+      "similarity": 0.988,
+      "language_probability": 1
+    },
+    {
+      "voice_id": "ar_warm_female",
+      "language": "ar",
+      "transcript": "في كل قصة سير لا يراه أحد واليوم نكشف الحقيقة التي خُلخُرَت حيات الجمير ونُروي كيف بدأ الخطر قبل أن يدرك الأبطال ما كان ينتذرهم",
+      "expected": "في كل قصة سر لا يراه أحد. واليوم نكشف الحقيقة التي غيّرت حياة الجميع، ونروي كيف بدأ الخطر قبل أن يدرك الأبطال ما كان ينتظرهم.",
+      "similarity": 0.951,
+      "language_probability": 1
+    },
+    {
+      "voice_id": "ar_bright_female",
+      "language": "ar",
+      "transcript": "في كل قصة سيرد لا يراه أحد واليوم نكشف الحقيقة التي غخرت حياة الجميع ونروي كيف بدأ الخطر قبل أن يدرك الأبطال ما كان ينتظرهم",
+      "expected": "في كل قصة سر لا يراه أحد. واليوم نكشف الحقيقة التي غيّرت حياة الجميع، ونروي كيف بدأ الخطر قبل أن يدرك الأبطال ما كان ينتظرهم.",
+      "similarity": 0.984,
+      "language_probability": 1
+    },
+    {
+      "voice_id": "ar_mature_female",
+      "language": "ar",
+      "transcript": "في كل قصة السر لا يراه أهد واليوم نكشف الحقيقة التي غخرت حياة الجميع ونروي كيف بدأ الخطر قبل أن يدرك الأبطال ما كان ينتظرهم",
+      "expected": "في كل قصة سر لا يراه أحد. واليوم نكشف الحقيقة التي غيّرت حياة الجميع، ونروي كيف بدأ الخطر قبل أن يدرك الأبطال ما كان ينتظرهم.",
+      "similarity": 0.975,
+      "language_probability": 1
+    },
+    {
+      "voice_id": "ar_calm_male",
+      "language": "ar",
+      "transcript": "في كل قصة السر لا يراه أحد واليوم نكشف الحقيقة التي ظخارت حياة الجميع ونروي كيف بدأ الخطر قبل أن يدرك الأبطال ما كان ينتذرهم",
+      "expected": "في كل قصة سر لا يراه أحد. واليوم نكشف الحقيقة التي غيّرت حياة الجميع، ونروي كيف بدأ الخطر قبل أن يدرك الأبطال ما كان ينتظرهم.",
+      "similarity": 0.963,
+      "language_probability": 1
+    },
+    {
+      "voice_id": "ar_deep_male",
+      "language": "ar",
+      "transcript": "في كل قسطة سيرون لا يراه أحد اليوم نكشف الحقيقة التي غخارت حياة الجمير ونروي كيف بدأ الخطر قبل أن يدرك الأبطال ما كان ينتظرهم",
+      "expected": "في كل قصة سر لا يراه أحد. واليوم نكشف الحقيقة التي غيّرت حياة الجميع، ونروي كيف بدأ الخطر قبل أن يدرك الأبطال ما كان ينتظرهم.",
+      "similarity": 0.951,
+      "language_probability": 1
+    },
+    {
+      "voice_id": "ar_young_male",
+      "language": "ar",
+      "transcript": "في كل قصة سر لا يراه أحد. واليوم نكشف الحقيقة التي غخارت حياة الجميع ونروي كيف بدأ الخطر قبل أن يدرك الأبطال ما كان ينتظرهم.",
+      "expected": "في كل قصة سر لا يراه أحد. واليوم نكشف الحقيقة التي غيّرت حياة الجميع، ونروي كيف بدأ الخطر قبل أن يدرك الأبطال ما كان ينتظرهم.",
+      "similarity": 0.988,
+      "language_probability": 1
+    },
+    {
+      "voice_id": "ar_epic_male",
+      "language": "ar",
+      "transcript": "في كل قصة سر لا يراه أحد واليوم نكشف الحقيقة التي غخرت حياة الجمير ونروي كيف بدأ الخطر قبل أن يدرك الأبطال ما كان ينتظرهم",
+      "expected": "في كل قصة سر لا يراه أحد. واليوم نكشف الحقيقة التي غيّرت حياة الجميع، ونروي كيف بدأ الخطر قبل أن يدرك الأبطال ما كان ينتظرهم.",
+      "similarity": 0.983,
+      "language_probability": 1
+    }
+  ]
+}

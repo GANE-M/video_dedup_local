@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import shutil
+import subprocess
+import tempfile
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -11,10 +14,11 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import video_dedup
 from recap.models import RecapProject, RecapSegment, now_iso
+from recap.pacing import PRESETS, get_preset
 from recap.project_store import create_project, delete_segment, load_project, save_new_version, update_segment
-from recap.renderer import generate_voice_preview, measure_project_loudness, render_project
+from recap.renderer import generate_voice_preview, inspect_sources, measure_project_loudness, render_project
 from recap.timeline import validate_source_intervals
-from recap.voice_library import VoiceLibrary
+from recap.voice_library import VoiceLibrary, engines_for_language
 
 
 class RecapWorkspace(ttk.Frame):
@@ -24,6 +28,33 @@ class RecapWorkspace(ttk.Frame):
         self.project_path = tk.StringVar()
         self.project_name = tk.StringVar(value="未加载项目")
         self.voice_id = tk.StringVar(value="calm_female")
+        self.target_language = tk.StringVar(value="English")
+        self.tts_engine = tk.StringVar(value="auto")
+        self.narration_preset = tk.StringVar(value="standard")
+        self.preset_labels = {
+            "快节奏（约38%成片）": "fast",
+            "标准解说（约50%成片）": "standard",
+            "沉浸剧情（约65%成片）": "immersive",
+        }
+        self.preset_display = tk.StringVar(value="标准解说（约50%成片）")
+        self.engine_labels: dict[str, str] = {}
+        self.engine_display = tk.StringVar()
+        self.loudness_labels = {
+            "保持模型原始音量（不修改）": "keep_original",
+            "匹配原片节目响度": "match_source_program",
+            "统一到 -18 LUFS": "-18",
+        }
+        self.loudness_display = tk.StringVar(value=next(iter(self.loudness_labels)))
+        self.caption_y_percent = tk.DoubleVar(value=12.0)
+        self.caption_font_size = tk.IntVar(value=38)
+        self.caption_preview_text = tk.StringVar(value="One decision changed everything.")
+        self.caption_preview_status = tk.StringVar(value="尚未抽取随机帧")
+        self.caption_preview_expanded = tk.BooleanVar(value=False)
+        self.caption_preview_canvas: tk.Canvas | None = None
+        self.caption_preview_photo: tk.PhotoImage | None = None
+        self.caption_preview_temp: Path | None = None
+        self.caption_preview_image_size = (0, 0)
+        self.caption_preview_dragging = False
         self.status = tk.StringVar(value="就绪")
         self.segment_id = tk.StringVar()
         self.episode = tk.IntVar(value=1)
@@ -33,6 +64,7 @@ class RecapWorkspace(ttk.Frame):
         self.purpose = tk.StringVar()
         self.project: RecapProject | None = None
         self.library = VoiceLibrary()
+        self._refresh_engine_options()
         self._build()
 
     def _build(self) -> None:
@@ -46,25 +78,67 @@ class RecapWorkspace(ttk.Frame):
         settings = ttk.LabelFrame(self, text="项目与声纹", padding=8)
         settings.pack(fill="x", pady=8)
         ttk.Label(settings, textvariable=self.project_name, font=("Microsoft YaHei UI", 10, "bold")).grid(row=0, column=0, sticky="w")
-        ttk.Label(settings, text="固定声纹").grid(row=0, column=1, sticky="e", padx=(20, 4))
-        voices = [(item.voice_id, item.display_name) for item in self.library.list()]
-        self.voice_labels = {f"{name} ({voice_id})": voice_id for voice_id, name in voices}
-        self.voice_display = tk.StringVar(value=next(iter(self.voice_labels), ""))
-        combo = ttk.Combobox(settings, textvariable=self.voice_display, values=tuple(self.voice_labels), state="readonly", width=24)
-        combo.grid(row=0, column=2, sticky="w")
-        combo.bind("<<ComboboxSelected>>", lambda _event: self._set_voice())
-        ttk.Button(settings, text="试听", command=self.preview_voice).grid(row=0, column=3, padx=5)
-        ttk.Button(settings, text="校验项目", command=self.validate_project).grid(row=0, column=4, padx=5)
-        ttk.Button(settings, text="测量响度", command=self.measure_loudness).grid(row=0, column=5, padx=5)
-        ttk.Label(settings, text="本页只编辑结构化时间轴和调用本地渲染，不连接字幕Agent。", foreground="#666").grid(row=1, column=0, columnspan=6, sticky="w", pady=(5, 0))
-        settings.columnconfigure(0, weight=1)
+        ttk.Label(settings, text="解说语言").grid(row=0, column=1, sticky="e", padx=(20, 4))
+        language_combo = ttk.Combobox(
+            settings, textvariable=self.target_language,
+            values=("English", "Arabic", "Chinese"), state="readonly", width=12,
+        )
+        language_combo.grid(row=0, column=2, sticky="w")
+        language_combo.bind("<<ComboboxSelected>>", lambda _event: self._set_language())
+        ttk.Label(settings, text="语音模型").grid(row=0, column=3, sticky="e", padx=(12, 4))
+        self.engine_combo = ttk.Combobox(
+            settings, textvariable=self.engine_display,
+            values=tuple(self.engine_labels), state="readonly", width=24,
+        )
+        self.engine_combo.grid(row=0, column=4, sticky="w")
+        self.engine_combo.bind("<<ComboboxSelected>>", lambda _event: self._set_engine())
 
-        body = ttk.Panedwindow(self, orient="horizontal")
-        body.pack(fill="both", expand=True)
-        left = ttk.Frame(body)
-        right = ttk.Frame(body)
-        body.add(left, weight=3)
-        body.add(right, weight=2)
+        ttk.Label(settings, text="固定声纹").grid(row=1, column=0, sticky="e", padx=(0, 4), pady=(6, 0))
+        self.voice_labels: dict[str, str] = {}
+        self.voice_display = tk.StringVar()
+        voice_control = ttk.Frame(settings)
+        voice_control.grid(row=1, column=1, columnspan=3, sticky="w", pady=(6, 0))
+        self.voice_combo = ttk.Combobox(voice_control, textvariable=self.voice_display, state="readonly", width=34)
+        self.voice_combo.pack(side="left")
+        self.voice_combo.bind("<<ComboboxSelected>>", lambda _event: self._set_voice())
+        ttk.Button(voice_control, text="▶ 试听当前声纹", command=self.preview_voice).pack(side="left", padx=(6, 0))
+        self.voice_count_label = ttk.Label(voice_control, foreground="#666")
+        self.voice_count_label.pack(side="left", padx=(8, 0))
+        ttk.Label(settings, text="解说音量").grid(row=2, column=0, sticky="e", pady=(6, 0))
+        loudness_combo = ttk.Combobox(
+            settings, textvariable=self.loudness_display,
+            values=tuple(self.loudness_labels), state="readonly", width=28,
+        )
+        loudness_combo.grid(row=2, column=1, columnspan=2, sticky="w", pady=(6, 0))
+        loudness_combo.bind("<<ComboboxSelected>>", lambda _event: self._set_loudness())
+        ttk.Label(settings, text="节奏预设").grid(row=2, column=3, sticky="e", padx=(12, 4), pady=(6, 0))
+        preset_combo = ttk.Combobox(
+            settings, textvariable=self.preset_display,
+            values=tuple(self.preset_labels), state="readonly", width=24,
+        )
+        preset_combo.grid(row=2, column=4, sticky="w", pady=(6, 0))
+        preset_combo.bind("<<ComboboxSelected>>", lambda _event: self._set_preset())
+        ttk.Button(settings, text="校验项目", command=self.validate_project).grid(row=3, column=3, padx=5, pady=(6, 0))
+        ttk.Button(settings, text="仅测量原片响度", command=self.measure_loudness).grid(row=3, column=4, padx=5, pady=(6, 0))
+        ttk.Label(
+            settings,
+            text="先选语言，再显示该语言支持的模型与声纹。默认保持 TTS 原始音量，不执行响度归一化。",
+            foreground="#666",
+        ).grid(row=4, column=0, columnspan=6, sticky="w", pady=(5, 0))
+        settings.columnconfigure(0, weight=1)
+        self._refresh_voice_options()
+
+        preview_toggle = ttk.Button(self, text="展开/收起解说字幕随机帧预览", command=self.toggle_caption_preview)
+        preview_toggle.pack(anchor="w", pady=(0, 5))
+        self.caption_preview_frame = ttk.LabelFrame(self, text="解说字幕位置预览", padding=8)
+        self._build_caption_preview(self.caption_preview_frame)
+
+        self.body = ttk.Panedwindow(self, orient="horizontal")
+        self.body.pack(fill="both", expand=True)
+        left = ttk.Frame(self.body)
+        right = ttk.Frame(self.body)
+        self.body.add(left, weight=3)
+        self.body.add(right, weight=2)
 
         columns = ("episode", "time", "mode", "purpose", "revision")
         self.tree = ttk.Treeview(left, columns=columns, show="tree headings", height=14)
@@ -133,14 +207,32 @@ class RecapWorkspace(ttk.Frame):
         name = simpledialog.askstring("项目名称", "请输入项目名称", initialvalue=Path(source).name) or Path(source).name
         project_id = re_safe_id(name)
         pattern = simpledialog.askstring("集数文件规则", "使用 {episode} 表示集数", initialvalue="*第{episode}集.mp4") or "*第{episode}集.mp4"
+        preset = get_preset(self.narration_preset.get())
+        target_percent = preset.target_ratio * 100.0
+        try:
+            ffprobe = video_dedup.find_binary("ffprobe")
+            source_pattern = pattern.replace("{episode}", "*").replace("{number}", "*")
+            source_info = inspect_sources(Path(source), ffprobe, source_pattern)
+            if source_info["episode_count"] == 0 or source_info["total_duration"] <= 0:
+                raise ValueError(f"没有源视频匹配规则：{pattern}")
+            target_duration = round(float(source_info["total_duration"]) * target_percent / 100.0, 3)
+        except Exception as exc:
+            messagebox.showerror("计算成片时长失败", str(exc))
+            return
         payload = {
             "schema_version": 1, "project_id": project_id, "project_name": name,
             "source_root": source, "episode_pattern": pattern, "subtitle_root": "",
-            "output_root": output, "target_language": "English", "target_duration_seconds": 450,
-            "voice_id": self.voice_id.get(), "narration_speed": 1.0,
-            "narration_target_loudness": "match_source_program", "segments": [],
+            "output_root": output, "target_language": self.target_language.get(), "target_duration_seconds": target_duration,
+            "narration_preset": preset.key,
+            "voice_id": self.voice_id.get(), "tts_engine": self.tts_engine.get(), "narration_speed": 1.0,
+            "narration_target_loudness": "keep_original", "segments": [],
             "current_version": 1, "created_at": now_iso(), "updated_at": now_iso(),
-            "rendering": {"hardware_acceleration": "auto", "crf": 21, "caption_y_percent": 12.0},
+            "rendering": {
+                "hardware_acceleration": "nvidia", "crf": 23,
+                "caption_y_percent": self.caption_y_percent.get(),
+                "caption_font_size": self.caption_font_size.get(),
+                "target_duration_ratio": target_percent / 100.0,
+            },
         }
         self.project = create_project(Path(path), payload)
         self.project_path.set(str(Path(path).resolve()))
@@ -161,14 +253,40 @@ class RecapWorkspace(ttk.Frame):
         if not self.project:
             return
         self.project_name.set(f"{self.project.project_name} · v{self.project.current_version:04d}")
+        self.target_language.set(self.project.target_language)
+        selected_preset = self.project.narration_preset if self.project.narration_preset in PRESETS and self.project.narration_preset != "legacy" else "standard"
+        self.narration_preset.set(selected_preset)
+        self.preset_display.set(next(
+            (label for label, value in self.preset_labels.items() if value == selected_preset),
+            "标准解说（约50%成片）",
+        ))
+        self.tts_engine.set(self.project.tts_engine)
+        self._refresh_engine_options(self.project.tts_engine)
         self.voice_id.set(self.project.voice_id)
+        self._refresh_voice_options(self.project.voice_id)
         for label, voice_id in self.voice_labels.items():
             if voice_id == self.project.voice_id:
                 self.voice_display.set(label)
+        loudness = str(self.project.narration_target_loudness or "keep_original")
+        self.loudness_display.set(next(
+            (label for label, value in self.loudness_labels.items() if value == loudness),
+            next(iter(self.loudness_labels)),
+        ))
+        self.caption_y_percent.set(float(self.project.rendering.get("caption_y_percent", 12.0)))
+        self.caption_font_size.set(int(self.project.rendering.get("caption_font_size", 38)))
+        self.redraw_caption_preview()
         self.tree.delete(*self.tree.get_children())
         for item in self.project.segments:
             self.tree.insert("", "end", iid=item.segment_id, text=item.segment_id, values=(item.episode, f"{item.source_start:.2f}–{item.source_end:.2f}", item.mode, item.purpose, item.revision))
         self.status.set(f"已载入 {len(self.project.segments)} 个片段")
+
+    def _set_preset(self) -> None:
+        preset = self.preset_labels.get(self.preset_display.get(), "standard")
+        self.narration_preset.set(preset)
+        if self.project and preset != self.project.narration_preset:
+            self.project.narration_preset = preset
+            save_new_version(Path(self.project_path.get()), self.project)
+            self.refresh()
 
     def _set_voice(self) -> None:
         voice_id = self.voice_labels.get(self.voice_display.get())
@@ -181,6 +299,69 @@ class RecapWorkspace(ttk.Frame):
             save_new_version(Path(self.project_path.get()), self.project)
             self.refresh()
 
+    def _refresh_engine_options(self, preferred_engine: str = "") -> None:
+        options = engines_for_language(self.target_language.get())
+        self.engine_labels = {item["label"]: item["value"] for item in options}
+        selected = preferred_engine or self.tts_engine.get() or "auto"
+        if selected not in self.engine_labels.values():
+            selected = "auto"
+        label = next(name for name, value in self.engine_labels.items() if value == selected)
+        self.tts_engine.set(selected)
+        self.engine_display.set(label)
+        if hasattr(self, "engine_combo"):
+            self.engine_combo.configure(values=tuple(self.engine_labels))
+
+    def _refresh_voice_options(self, preferred_voice_id: str = "") -> None:
+        self.library = self.library.reload()
+        profiles = self.library.compatible(self.target_language.get(), self.tts_engine.get())
+        self.voice_labels = {
+            f"{item.display_name} ({item.voice_id})": item.voice_id
+            for item in profiles
+        }
+        self.voice_combo.configure(values=tuple(self.voice_labels))
+        selected = preferred_voice_id or self.voice_id.get()
+        label = next((name for name, voice_id in self.voice_labels.items() if voice_id == selected), "")
+        if not label and self.voice_labels:
+            label = next(iter(self.voice_labels))
+            selected = self.voice_labels[label]
+        self.voice_display.set(label)
+        if selected:
+            self.voice_id.set(selected)
+        if hasattr(self, "voice_count_label"):
+            self.voice_count_label.configure(text=f"已载入 {len(profiles)} 个声纹")
+
+    def _set_language(self) -> None:
+        self._refresh_engine_options()
+        self._refresh_voice_options()
+        self.caption_preview_text.set({
+            "Arabic": "قرار واحد غيّر كل شيء.",
+            "Chinese": "一个决定改变了一切。",
+        }.get(self.target_language.get(), "One decision changed everything."))
+        if self.project:
+            self.project.target_language = self.target_language.get()
+            self.project.tts_engine = self.tts_engine.get()
+            self.project.voice_id = self.voice_id.get()
+            save_new_version(Path(self.project_path.get()), self.project)
+            self.refresh()
+
+    def _set_engine(self) -> None:
+        self.tts_engine.set(self.engine_labels.get(self.engine_display.get(), "auto"))
+        self._refresh_voice_options()
+        if self.project:
+            self.project.tts_engine = self.tts_engine.get()
+            self.project.voice_id = self.voice_id.get()
+            save_new_version(Path(self.project_path.get()), self.project)
+            self.refresh()
+
+    def _set_loudness(self) -> None:
+        if not self.project:
+            return
+        self.project.narration_target_loudness = self.loudness_labels.get(
+            self.loudness_display.get(), "keep_original"
+        )
+        save_new_version(Path(self.project_path.get()), self.project)
+        self.refresh()
+
     def preview_voice(self) -> None:
         voice_id = self.voice_labels.get(self.voice_display.get(), self.voice_id.get())
         def work():
@@ -189,6 +370,172 @@ class RecapWorkspace(ttk.Frame):
             self.after(0, lambda: os.startfile(path) if os.name == "nt" else messagebox.showinfo("试听文件", str(path)))  # type: ignore[attr-defined]
             return result
         self._background("生成/打开声纹试听", work)
+
+    def _build_caption_preview(self, parent: ttk.LabelFrame) -> None:
+        toolbar = ttk.Frame(parent)
+        toolbar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        ttk.Button(toolbar, text="随机换一帧", command=self.load_random_caption_frame).pack(side="left")
+        ttk.Button(toolbar, text="选择其他视频", command=self.choose_caption_preview_video).pack(side="left", padx=5)
+        ttk.Label(toolbar, textvariable=self.caption_preview_status, foreground="#666").pack(side="left", padx=8)
+        self.caption_preview_canvas = tk.Canvas(
+            parent, width=420, height=240, background="#111",
+            highlightthickness=1, highlightbackground="#999",
+        )
+        self.caption_preview_canvas.grid(row=1, column=0, sticky="nw")
+        self.caption_preview_canvas.bind("<ButtonPress-1>", self._caption_drag_start)
+        self.caption_preview_canvas.bind("<B1-Motion>", self._caption_drag_move)
+        self.caption_preview_canvas.bind("<ButtonRelease-1>", self._caption_drag_end)
+        controls = ttk.Frame(parent)
+        controls.grid(row=1, column=1, sticky="new", padx=(12, 0))
+        ttk.Label(controls, text="预览字幕").pack(anchor="w")
+        ttk.Entry(controls, textvariable=self.caption_preview_text, width=42).pack(fill="x", pady=(2, 8))
+        ttk.Label(controls, text="字幕纵向位置 (%)").pack(anchor="w")
+        tk.Scale(
+            controls, variable=self.caption_y_percent, from_=0, to=92, resolution=0.5,
+            orient="horizontal", command=lambda _value: self.redraw_caption_preview(),
+        ).pack(fill="x")
+        ttk.Label(controls, text="字幕字号").pack(anchor="w", pady=(8, 0))
+        tk.Scale(
+            controls, variable=self.caption_font_size, from_=16, to=90, resolution=1,
+            orient="horizontal", command=lambda _value: self.redraw_caption_preview(),
+        ).pack(fill="x")
+        ttk.Button(controls, text="保存字幕位置与字号", command=self.save_caption_settings).pack(anchor="w", pady=(10, 0))
+        ttk.Label(
+            controls, text="拖动画面中的字幕也可调整纵向位置。", foreground="#666",
+        ).pack(anchor="w", pady=(6, 0))
+        self.caption_preview_text.trace_add("write", lambda *_args: self.redraw_caption_preview())
+
+    def toggle_caption_preview(self) -> None:
+        if self.caption_preview_expanded.get():
+            self.caption_preview_frame.pack_forget()
+            self.caption_preview_expanded.set(False)
+            return
+        self.caption_preview_frame.pack(fill="x", pady=(0, 8), before=self.body)
+        self.caption_preview_expanded.set(True)
+        if not self.caption_preview_photo:
+            self.load_random_caption_frame()
+
+    def _caption_preview_video(self) -> Path | None:
+        if not self.project:
+            return None
+        if self.project.segments:
+            try:
+                candidate = self.project.episode_path(self.project.segments[0].episode)
+                if candidate.is_file():
+                    return candidate
+            except (OSError, ValueError, KeyError):
+                pass
+        root = self.project.source_path()
+        return next(
+            (path for path in sorted(root.iterdir()) if path.is_file() and path.suffix.casefold() in video_dedup.VIDEO_SUFFIXES),
+            None,
+        )
+
+    def choose_caption_preview_video(self) -> None:
+        path = filedialog.askopenfilename(
+            title="选择解说字幕预览视频",
+            filetypes=[("视频文件", "*.mp4 *.mov *.mkv *.avi *.webm *.m4v"), ("所有文件", "*.*")],
+        )
+        if path:
+            self.load_random_caption_frame(Path(path))
+
+    def load_random_caption_frame(self, selected_video: Path | None = None) -> None:
+        video = selected_video or self._caption_preview_video()
+        if not video or not video.is_file():
+            messagebox.showwarning("缺少视频", "请先载入解说项目，或手动选择预览视频。")
+            return
+        try:
+            ffmpeg = video_dedup.find_binary("ffmpeg")
+            ffprobe = video_dedup.find_binary("ffprobe")
+            info = video_dedup.probe_video(video, ffprobe)
+            duration = max(0.0, float(info.get("duration") or 0))
+            second = random.uniform(0, max(0.1, duration - 0.1)) if duration > 0.2 else 0.0
+            if self.caption_preview_temp:
+                self.caption_preview_temp.unlink(missing_ok=True)
+            fd, name = tempfile.mkstemp(prefix="recap-caption-preview-", suffix=".png")
+            os.close(fd)
+            frame = Path(name)
+            subprocess.run([
+                ffmpeg, "-hide_banner", "-y", "-ss", f"{second:.3f}", "-i", str(video),
+                "-frames:v", "1", "-vf", "scale=420:-2", str(frame),
+            ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                encoding="utf-8", errors="replace", **video_dedup.hidden_subprocess_kwargs())
+            photo = tk.PhotoImage(file=str(frame))
+            self.caption_preview_temp = frame
+            self.caption_preview_photo = photo
+            self.caption_preview_image_size = (photo.width(), photo.height())
+            if self.caption_preview_canvas:
+                self.caption_preview_canvas.configure(width=photo.width(), height=photo.height())
+            self.caption_preview_status.set(f"{video.name} · {second:.1f}s / {duration:.1f}s")
+            self.redraw_caption_preview()
+        except (OSError, ValueError, subprocess.CalledProcessError, tk.TclError) as exc:
+            messagebox.showerror("抽帧失败", str(exc))
+
+    def _preview_wrapped_lines(self, text: str, max_chars: int) -> list[str]:
+        words = " ".join(text.replace("\n", " ").split()).split()
+        lines: list[str] = []
+        current = ""
+        for word in words:
+            candidate = word if not current else f"{current} {word}"
+            if current and len(candidate) > max_chars:
+                lines.append(current)
+                current = word
+                if len(lines) >= 2:
+                    break
+            else:
+                current = candidate
+        if current and len(lines) < 3:
+            lines.append(current)
+        return lines[:3]
+
+    def redraw_caption_preview(self) -> None:
+        canvas = self.caption_preview_canvas
+        if not canvas:
+            return
+        canvas.delete("all")
+        if not self.caption_preview_photo:
+            canvas.create_text(210, 120, text="载入项目后随机抽帧", fill="#ddd")
+            return
+        canvas.create_image(0, 0, image=self.caption_preview_photo, anchor="nw")
+        width, height = self.caption_preview_image_size
+        font_size = max(8, int(self.caption_font_size.get() * width / 1080))
+        max_chars = max(12, int(width * 0.88 / max(8, font_size) / 0.62))
+        lines = self._preview_wrapped_lines(self.caption_preview_text.get(), max_chars)
+        start_y = max(font_size, min(height - font_size, height * self.caption_y_percent.get() / 100))
+        for index, line in enumerate(lines):
+            y = start_y + index * (font_size + 5)
+            for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2)):
+                canvas.create_text(width / 2 + dx, y + dy, text=line, fill="#000", font=("Arial", font_size, "bold"), anchor="n")
+            canvas.create_text(width / 2, y, text=line, fill="#fff", font=("Arial", font_size, "bold"), anchor="n")
+
+    def _set_caption_y_from_event(self, event) -> None:
+        _width, height = self.caption_preview_image_size
+        if height <= 0:
+            return
+        self.caption_y_percent.set(round(max(0.0, min(92.0, event.y / height * 100)), 1))
+        self.redraw_caption_preview()
+
+    def _caption_drag_start(self, event) -> None:
+        self.caption_preview_dragging = True
+        self._set_caption_y_from_event(event)
+
+    def _caption_drag_move(self, event) -> None:
+        if self.caption_preview_dragging:
+            self._set_caption_y_from_event(event)
+
+    def _caption_drag_end(self, _event) -> None:
+        self.caption_preview_dragging = False
+
+    def save_caption_settings(self) -> None:
+        try:
+            path, project = self._require()
+            project.rendering["caption_y_percent"] = round(float(self.caption_y_percent.get()), 2)
+            project.rendering["caption_font_size"] = int(self.caption_font_size.get())
+            self.project = save_new_version(path, project)
+            self.refresh()
+            self.status.set("字幕位置与字号已保存")
+        except Exception as exc:
+            messagebox.showerror("保存失败", str(exc))
 
     def select_segment(self, _event=None) -> None:
         if not self.project or not self.tree.selection():
@@ -199,6 +546,8 @@ class RecapWorkspace(ttk.Frame):
         self.source_start.set(item.source_start); self.source_end.set(item.source_end)
         self.mode.set(item.mode); self.purpose.set(item.purpose)
         self.narration.delete("1.0", "end"); self.narration.insert("1.0", item.narration_text)
+        if item.narration_text:
+            self.caption_preview_text.set(item.narration_text)
 
     def add_segment(self) -> None:
         try:

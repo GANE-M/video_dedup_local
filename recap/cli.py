@@ -12,8 +12,10 @@ from .project_store import (
     create_project, delete_segment, diff_versions, load_project, rollback_project,
     save_project, update_segment,
 )
+from .pacing import get_preset, normalize_preset
 from .renderer import generate_voice_preview, inspect_sources, measure_project_loudness, render_project
 from .timeline import validate_source_intervals
+from .tts_routing import resolve_tts_engine
 from .voice_library import VoiceLibrary
 
 
@@ -21,7 +23,7 @@ def emit(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
-def default_project_payload(args: argparse.Namespace) -> dict[str, Any]:
+def default_project_payload(args: argparse.Namespace, target_duration: float) -> dict[str, Any]:
     return {
         "schema_version": 1,
         "project_id": args.project_id,
@@ -31,13 +33,19 @@ def default_project_payload(args: argparse.Namespace) -> dict[str, Any]:
         "subtitle_root": str(Path(args.subtitle_root).resolve()) if args.subtitle_root else "",
         "output_root": str(Path(args.output).resolve()),
         "target_language": args.target_language,
-        "target_duration_seconds": args.target_duration,
+        "target_duration_seconds": target_duration,
+        "narration_preset": args.narration_preset,
         "voice_id": args.voice_id,
+        "tts_engine": args.tts_engine,
         "narration_speed": args.narration_speed,
-        "narration_target_loudness": "match_source_program",
+        "narration_target_loudness": "keep_original",
         "segments": [],
         "current_version": 1,
-        "rendering": {"hardware_acceleration": "auto", "crf": 21, "caption_y_percent": 12.0},
+        "rendering": {
+            "hardware_acceleration": "nvidia", "crf": 23, "caption_y_percent": 12.0,
+            "caption_font_size": 38,
+            "target_duration_ratio": args.target_ratio,
+        },
     }
 
 
@@ -60,8 +68,11 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--subtitle-root", default="")
     create.add_argument("--output", required=True, type=Path)
     create.add_argument("--target-language", default="English")
-    create.add_argument("--target-duration", type=float, default=450.0)
+    create.add_argument("--target-duration", type=float, default=None, help="Explicit target seconds; overrides --target-ratio")
+    create.add_argument("--target-ratio", type=float, default=None, help="Target/source duration ratio; overrides the narration preset ratio")
+    create.add_argument("--narration-preset", choices=("fast", "standard", "immersive"), default="standard")
     create.add_argument("--voice-id", default="calm_female")
+    create.add_argument("--tts-engine", choices=("auto", "qwen3_tts", "fish_s2", "chatterbox_v3"), default="auto")
     create.add_argument("--narration-speed", type=float, default=1.0)
 
     for name in ("validate-project", "measure-loudness", "render-preview", "render-final"):
@@ -101,8 +112,29 @@ def dispatch(args: argparse.Namespace) -> dict[str, Any]:
     if args.command == "inspect-sources":
         return inspect_sources(args.source, ffprobe, args.pattern)
     if args.command == "create-project":
-        project = create_project(args.project, default_project_payload(args))
-        return {"status": "ok", "project_id": project.project_id, "version": project.current_version, "project_path": str(args.project.resolve())}
+        args.narration_preset = normalize_preset(args.narration_preset)
+        if args.target_ratio is None:
+            args.target_ratio = get_preset(args.narration_preset).target_ratio
+        if not 0 < args.target_ratio <= 1:
+            raise ValueError("target ratio must be greater than 0 and no more than 1")
+        source_total = None
+        target_duration = args.target_duration
+        if target_duration is None:
+            source_pattern = args.episode_pattern.replace("{episode}", "*").replace("{number}", "*")
+            source_info = inspect_sources(args.source, ffprobe, source_pattern)
+            source_total = float(source_info["total_duration"])
+            if source_info["episode_count"] == 0 or source_total <= 0:
+                raise ValueError(f"no source videos matched episode pattern: {args.episode_pattern}")
+            target_duration = round(source_total * args.target_ratio, 3)
+        if target_duration <= 0:
+            raise ValueError("target duration must be greater than 0")
+        resolve_tts_engine(args.target_language, args.tts_engine)
+        project = create_project(args.project, default_project_payload(args, target_duration))
+        return {
+            "status": "ok", "project_id": project.project_id, "version": project.current_version,
+            "project_path": str(args.project.resolve()), "source_total_duration_seconds": source_total,
+            "target_duration_ratio": args.target_ratio, "target_duration_seconds": target_duration,
+        }
     if args.command == "list-voices":
         library = VoiceLibrary(args.library) if args.library else VoiceLibrary()
         return {"status": "ok", "voices": [{**item.to_dict(), "asset_errors": library.validate_assets(item.voice_id, require_preview=True)} for item in library.list()]}

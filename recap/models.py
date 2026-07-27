@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -9,6 +10,13 @@ from typing import Any
 
 
 SCHEMA_VERSION = 1
+
+
+def natural_path_key(path: Path) -> tuple:
+    return tuple(
+        int(part) if part.isdigit() else part.casefold()
+        for part in re.split(r"(\d+)", path.name)
+    )
 
 
 def now_iso() -> str:
@@ -83,6 +91,8 @@ class RecapProject:
     created_at: str
     updated_at: str
     rendering: dict[str, Any] = field(default_factory=dict)
+    tts_engine: str = "auto"
+    narration_preset: str = "legacy"
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "RecapProject":
@@ -97,10 +107,12 @@ class RecapProject:
             subtitle_root=str(value.get("subtitle_root", "")).strip(),
             output_root=str(value.get("output_root", "")).strip(),
             target_language=str(value.get("target_language", "English")).strip(),
-            target_duration_seconds=float(value.get("target_duration_seconds", 450.0)),
+            target_duration_seconds=float(value.get("target_duration_seconds", 0.0)),
             voice_id=str(value.get("voice_id", "calm_female")).strip(),
+            tts_engine=str(value.get("tts_engine", "auto")).strip().casefold(),
+            narration_preset=str(value.get("narration_preset", "legacy")).strip().casefold(),
             narration_speed=float(value.get("narration_speed", 1.0)),
-            narration_target_loudness=value.get("narration_target_loudness", "match_source_program"),
+            narration_target_loudness=value.get("narration_target_loudness", "keep_original"),
             segments=[RecapSegment.from_dict(item) for item in value.get("segments", [])],
             current_version=max(1, int(value.get("current_version", 1))),
             created_at=str(value.get("created_at") or now_iso()),
@@ -125,16 +137,15 @@ class RecapProject:
             name = pattern.format(episode=episode, number=episode)
             candidate = self.source_path() / name
             if any(char in name for char in "*?["):
-                matches = sorted(self.source_path().glob(name))
+                matches = sorted(self.source_path().glob(name), key=natural_path_key)
                 if len(matches) == 1:
                     return matches[0].resolve()
                 if len(matches) > 1:
                     raise ValueError(f"episode {episode} matches multiple files: {[str(item) for item in matches]}")
             return candidate.resolve()
-        matches = sorted(self.source_path().glob(pattern))
-        numbered = [item for item in matches if str(episode) in item.stem]
-        if len(numbered) == 1:
-            return numbered[0].resolve()
+        matches = sorted(self.source_path().glob(pattern), key=natural_path_key)
+        if 1 <= episode <= len(matches):
+            return matches[episode - 1].resolve()
         raise FileNotFoundError(f"cannot resolve episode {episode} with pattern {pattern!r}")
 
 
@@ -155,6 +166,15 @@ class VoiceProfile:
     model_version: str
     generation_parameters: dict[str, Any]
     design_instruction: str = ""
+    reference_language: str = ""
+    allowed_engines: list[str] = field(default_factory=list)
+    speech_rate: dict[str, Any] = field(default_factory=dict)
+    age_group: str = ""
+    role_archetype: str = ""
+    source_kind: str = ""
+    review_status: str = "approved"
+    quality_score: float | None = None
+    provenance: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "VoiceProfile":
@@ -174,6 +194,15 @@ class VoiceProfile:
             model_version=str(value.get("model_version", "")).strip(),
             generation_parameters=dict(value.get("generation_parameters") or {}),
             design_instruction=str(value.get("design_instruction", "")).strip(),
+            reference_language=str(value.get("reference_language", "")).strip(),
+            allowed_engines=[str(item).strip().casefold() for item in value.get("allowed_engines", [])],
+            speech_rate=dict(value.get("speech_rate") or {}),
+            age_group=str(value.get("age_group", "")).strip(),
+            role_archetype=str(value.get("role_archetype", "")).strip(),
+            source_kind=str(value.get("source_kind", "")).strip(),
+            review_status=str(value.get("review_status", "approved")).strip() or "approved",
+            quality_score=(float(value["quality_score"]) if value.get("quality_score") is not None else None),
+            provenance=dict(value.get("provenance") or {}),
         )
 
     def to_dict(self) -> dict[str, Any]:
