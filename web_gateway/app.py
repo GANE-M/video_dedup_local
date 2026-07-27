@@ -519,8 +519,10 @@ def create_app(settings: GatewaySettings | None = None, *, start_worker: bool = 
         # The HTML names the exact frontend module revision. Never let a
         # browser or reverse proxy combine an old HTML shell with newly split
         # JavaScript files; that leaves visible controls without event handlers.
+        html = (Path(__file__).with_name("static") / "index.html").read_text(encoding="utf-8")
+        html = html.replace("__WEB_BUILD_VERSION__", WEB_BUILD_VERSION)
         return HTMLResponse(
-            (Path(__file__).with_name("static") / "index.html").read_text(encoding="utf-8"),
+            html,
             headers={
                 "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
                 "Pragma": "no-cache",

@@ -1,5 +1,5 @@
 // Page bootstrap. Feature code lives in focused modules under /static/js.
-const frontendBuildVersion='20260727-28';
+const frontendBuildVersion=document.querySelector('meta[name="app-build"]')?.content||'unknown';
 let dismissedBackendBuild='';
 const refreshNotice=document.getElementById('versionRefreshNotice');
 
