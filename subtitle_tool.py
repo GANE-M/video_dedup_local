@@ -20,6 +20,7 @@ import sys
 import tempfile
 import time
 import types
+import unicodedata
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -115,6 +116,10 @@ class AlignedSubtitlePair:
     temporal_confidence: float = 0.0
     confidence_score: float = 0.0
     confidence_reason: str = "unscored"
+    source_indexes: tuple[int, ...] = ()
+    visual_fragments: tuple[str, ...] = ()
+    audio_fragments: tuple[str, ...] = ()
+    audio_segments: tuple[int, ...] = ()
 
 
 @dataclass
@@ -303,6 +308,14 @@ def build_series_evidence_catalog(translation_record_paths: list[Path]) -> dict[
             except (TypeError, ValueError):
                 index = position
             rows[index] = {
+                "index": index,
+                "start": str(item.get("start", "")).strip(),
+                "end": str(item.get("end", "")).strip(),
+                "source_indexes": [
+                    int(value)
+                    for value in item.get("source_indexes", [])
+                    if str(value).strip().lstrip("-").isdigit()
+                ],
                 "source": [
                     str(item.get(key, "")).strip()
                     for key in ("source_clean", "visual_source_clean", "audio_asr_clean")
@@ -333,12 +346,115 @@ def build_series_evidence_catalog(translation_record_paths: list[Path]) -> dict[
     return catalog
 
 
+def _is_entity_word_character(value: str) -> bool:
+    """Treat Unicode combining marks as part of the preceding word.
+
+    Python's ``\\w`` does not include Arabic vowel/shape marks. Without this
+    check a short name such as ``علي`` also matches the ordinary word ``عليّ``.
+    """
+    return bool(value) and (value == "_" or value.isalnum() or unicodedata.category(value).startswith("M"))
+
+
 def _entity_pattern(value: str) -> str:
-    return rf"(?<!\w){re.escape(value)}(?!\w)"
+    return re.escape(value)
+
+
+def _entity_matches(text: str, value: str) -> list[re.Match[str]]:
+    if not text or not value:
+        return []
+    matches: list[re.Match[str]] = []
+    for match in re.finditer(_entity_pattern(value), text, flags=re.IGNORECASE | re.UNICODE):
+        before = text[match.start() - 1] if match.start() else ""
+        after = text[match.end()] if match.end() < len(text) else ""
+        if not _is_entity_word_character(before) and not _is_entity_word_character(after):
+            matches.append(match)
+    return matches
 
 
 def _contains_entity(text: str, value: str) -> bool:
-    return bool(re.search(_entity_pattern(value), text, flags=re.IGNORECASE | re.UNICODE))
+    return bool(_entity_matches(text, value))
+
+
+def _normalized_source_form(value: str) -> str:
+    return re.sub(r"\s+", " ", value.strip()).casefold()
+
+
+def _source_contains_form(source_values: Sequence[str], source_form: str) -> bool:
+    return any(_contains_entity(value, source_form) for value in source_values if value)
+
+
+def _person_variant_shape_is_safe(old: str, new: str) -> bool:
+    """Reject obvious nickname-to-full-name expansion before any mutation."""
+    old_letters = "".join(char for char in old.casefold() if char.isalpha())
+    new_letters = "".join(char for char in new.casefold() if char.isalpha())
+    if not old_letters or not new_letters:
+        return False
+    length_ratio = min(len(old_letters), len(new_letters)) / max(len(old_letters), len(new_letters))
+    return length_ratio >= 0.65
+
+
+def _person_source_form_is_too_short(source_form: str) -> bool:
+    """Short Latin names are too ambiguous for unattended series-wide edits."""
+    latin_letters = "".join(char for char in source_form if "a" <= char.casefold() <= "z")
+    return bool(latin_letters) and len(latin_letters) == len("".join(char for char in source_form if char.isalpha())) and len(latin_letters) <= 4
+
+
+def _candidate_rows_for_reference(episode: dict, evidence_index: int) -> list[tuple[int, dict]]:
+    """Resolve exact, merged-source, then nearby rows without trusting the whole episode."""
+    rows = episode.get("rows", {})
+    candidates: list[tuple[int, dict]] = []
+    seen: set[int] = set()
+
+    def add(index: int) -> None:
+        row = rows.get(index)
+        if row is not None and index not in seen:
+            seen.add(index)
+            candidates.append((index, row))
+
+    add(evidence_index)
+    for index, row in rows.items():
+        if evidence_index in row.get("source_indexes", []):
+            add(index)
+    for distance in (1, 2):
+        add(evidence_index - distance)
+        add(evidence_index + distance)
+    return candidates
+
+
+def _report_supports_row(
+    episode: dict,
+    kind: str,
+    row_index: int,
+    row: dict,
+    source_form: str,
+    old: str,
+    new: str,
+) -> bool:
+    row_positions = {row_index, *row.get("source_indexes", [])}
+    for report in episode.get("reports", []):
+        for entity in report.get("entities", []):
+            if not isinstance(entity, dict) or str(entity.get("kind", "")).strip().casefold() != kind:
+                continue
+            source_aliases = [str(value).strip() for value in entity.get("source_aliases", []) if str(value).strip()]
+            if not any(_normalized_source_form(value) == _normalized_source_form(source_form) for value in source_aliases):
+                continue
+            variants = [
+                clean_translated_text(str(value))
+                for value in entity.get("target_variants", [])
+                if str(value).strip()
+            ]
+            preferred = clean_translated_text(str(entity.get("preferred_target", "")))
+            if preferred:
+                variants.append(preferred)
+            if not any(value and (_contains_entity(value, old) or _contains_entity(value, new)) for value in variants):
+                continue
+            try:
+                entity_indexes = {int(value) for value in entity.get("evidence_indexes", [])}
+            except (TypeError, ValueError):
+                continue
+            if any(abs(entity_index - row_position) <= 2 for entity_index in entity_indexes for row_position in row_positions):
+                return True
+    return False
 
 
 def validate_series_consistency_replacements(
@@ -348,7 +464,6 @@ def validate_series_consistency_replacements(
 ) -> tuple[list[dict], list[dict]]:
     """Verify model claims against real episode/index rows and reject conflicts."""
     allowed_kinds = {"person", "family", "place", "organization", "rank", "title"}
-    subtitle_text = "\n".join(item.text for path in subtitle_paths for item in parse_srt(path))
     candidates: list[dict] = []
     rejected: list[dict] = []
 
@@ -372,11 +487,26 @@ def validate_series_consistency_replacements(
         if confidence < 0.85 or len(old) > 120 or len(new) > 120:
             reject(entry, "置信度不足或名称过长")
             continue
+        raw_source_forms = entry.get("source_forms")
+        source_forms = [str(value).strip() for value in raw_source_forms] if isinstance(raw_source_forms, list) else []
+        source_forms = [value for value in source_forms if value]
+        if len(source_forms) != 1:
+            reject(entry, "必须提供且只提供一个精确 source_forms 原文名称")
+            continue
+        source_form = source_forms[0]
+        if kind == "person" and _person_source_form_is_too_short(source_form):
+            reject(entry, "原文人物名过短，可能是昵称或普通词，禁止自动全剧替换")
+            continue
+        if kind == "person" and not _person_variant_shape_is_safe(old, new):
+            reject(entry, "疑似把昵称或短名强制扩展为全名")
+            continue
         evidence = entry.get("evidence")
         if not isinstance(evidence, list):
             reject(entry, "缺少可核验的 episode/index 证据")
             continue
         verified_episodes: set[str] = set()
+        verified_rows: dict[str, set[int]] = {}
+        cited_old_rows: set[tuple[str, int]] = set()
         evidence_valid = True
         for reference in evidence:
             if not isinstance(reference, dict):
@@ -391,48 +521,50 @@ def validate_series_consistency_replacements(
             for raw_index in indexes:
                 try:
                     evidence_index = int(raw_index)
-                    row = episode["rows"][evidence_index]
-                except (TypeError, ValueError, KeyError):
+                except (TypeError, ValueError):
                     evidence_valid = False
                     break
-                target_values = row.get("target", [])
-                if not any(_contains_entity(value, old) or _contains_entity(value, new) for value in target_values):
+                matched_row: tuple[int, dict] | None = None
+                for row_index, row in _candidate_rows_for_reference(episode, evidence_index):
+                    if not _source_contains_form(row.get("source", []), source_form):
+                        continue
+                    target_values = row.get("target", [])
+                    if not any(_contains_entity(value, old) or _contains_entity(value, new) for value in target_values):
+                        continue
+                    if not _report_supports_row(episode, kind, row_index, row, source_form, old, new):
+                        continue
+                    matched_row = (row_index, row)
+                    break
+                if matched_row is None:
                     evidence_valid = False
                     break
-                entity_support = False
-                for report in episode.get("reports", []):
-                    for entity in report.get("entities", []):
-                        if not isinstance(entity, dict) or str(entity.get("kind", "")).strip().casefold() != kind:
-                            continue
-                        try:
-                            entity_indexes = {int(value) for value in entity.get("evidence_indexes", [])}
-                        except (TypeError, ValueError):
-                            continue
-                        variants = [
-                            clean_translated_text(str(value))
-                            for value in entity.get("target_variants", [])
-                        ]
-                        preferred = clean_translated_text(str(entity.get("preferred_target", "")))
-                        if preferred:
-                            variants.append(preferred)
-                        if evidence_index in entity_indexes and any(
-                            value.casefold() in {old.casefold(), new.casefold()} for value in variants if value
-                        ):
-                            entity_support = True
-                            break
-                    if entity_support:
-                        break
-                if not entity_support:
-                    evidence_valid = False
-                    break
+                matched_index, matched = matched_row
+                verified_rows.setdefault(episode_key, set()).add(matched_index)
+                if any(_contains_entity(value, old) for value in matched.get("target", [])):
+                    cited_old_rows.add((episode_key, matched_index))
             if not evidence_valid:
                 break
             verified_episodes.add(episode_key)
         if not evidence_valid or len(verified_episodes) < 2:
             reject(entry, "证据索引不存在、对应字幕不含名称，或不足两集")
             continue
-        if not _contains_entity(subtitle_text, old):
-            reject(entry, "待替换名称未出现在终稿字幕")
+        eligible_rows: dict[str, list[int]] = {}
+        for episode_key, episode in evidence_catalog.items():
+            for row_index, row in episode.get("rows", {}).items():
+                if _source_contains_form(row.get("source", []), source_form) and any(
+                    _contains_entity(value, old) for value in row.get("target", [])
+                ):
+                    eligible_rows.setdefault(episode_key, []).append(row_index)
+        eligible_count = sum(len(indexes) for indexes in eligible_rows.values())
+        if not eligible_count:
+            reject(entry, "原文绑定行中没有待替换名称")
+            continue
+        evidence_old_count = len(cited_old_rows)
+        if not evidence_old_count:
+            reject(entry, "证据中没有明确引用待替换的旧名称")
+            continue
+        if eligible_count > max(6, evidence_old_count * 3):
+            reject(entry, f"替换影响面异常：证据 {evidence_old_count} 处，候选 {eligible_count} 处")
             continue
         candidates.append(
             {
@@ -440,8 +572,11 @@ def validate_series_consistency_replacements(
                 "from": old,
                 "to": new,
                 "confidence": confidence,
+                "source_forms": [source_form],
                 "verified_episode_count": len(verified_episodes),
                 "evidence": evidence,
+                "verified_rows": {key: sorted(values) for key, values in verified_rows.items()},
+                "eligible_rows": eligible_rows,
             }
         )
 
@@ -474,8 +609,39 @@ def _apply_simultaneous_entity_replacements(text: str, replacements: list[dict])
         return text, 0
     mapping = {entry["from"].casefold(): entry["to"] for entry in replacements}
     alternatives = "|".join(re.escape(entry["from"]) for entry in sorted(replacements, key=lambda row: len(row["from"]), reverse=True))
-    pattern = re.compile(rf"(?<!\w)(?:{alternatives})(?!\w)", flags=re.IGNORECASE | re.UNICODE)
-    return pattern.subn(lambda match: mapping[match.group(0).casefold()], text)
+    pattern = re.compile(rf"(?:{alternatives})", flags=re.IGNORECASE | re.UNICODE)
+    pieces: list[str] = []
+    cursor = 0
+    changes = 0
+    for match in pattern.finditer(text):
+        before = text[match.start() - 1] if match.start() else ""
+        after = text[match.end()] if match.end() < len(text) else ""
+        if _is_entity_word_character(before) or _is_entity_word_character(after):
+            continue
+        pieces.append(text[cursor:match.start()])
+        pieces.append(mapping[match.group(0).casefold()])
+        cursor = match.end()
+        changes += 1
+    if not changes:
+        return text, 0
+    pieces.append(text[cursor:])
+    return "".join(pieces), changes
+
+
+def _subtitle_item_matches_row(item: SubtitleItem, row_index: int, row: dict) -> bool:
+    start = str(row.get("start", "")).strip()
+    end = str(row.get("end", "")).strip()
+    if start and end:
+        if item.start == start and item.end == end:
+            return True
+        try:
+            return (
+                srt_time_to_seconds(item.start) <= srt_time_to_seconds(start) + 0.05
+                and srt_time_to_seconds(item.end) >= srt_time_to_seconds(end) - 0.05
+            )
+        except ValueError:
+            return False
+    return item.index == row_index
 
 
 def apply_series_consistency_replacements(
@@ -489,11 +655,20 @@ def apply_series_consistency_replacements(
     )
     changed_files = 0
     changed_occurrences = 0
-    for path in subtitle_paths:
+    episode_items = list((evidence_catalog or {}).items())
+    for position, path in enumerate(subtitle_paths):
+        episode_key, episode = episode_items[position] if position < len(episode_items) else (str(position + 1), {})
         items = parse_srt(path)
         file_changes = 0
         for item in items:
-            item.text, count = _apply_simultaneous_entity_replacements(item.text, validated)
+            applicable: list[dict] = []
+            for replacement in validated:
+                for row_index in replacement.get("eligible_rows", {}).get(episode_key, []):
+                    row = episode.get("rows", {}).get(row_index, {})
+                    if _subtitle_item_matches_row(item, row_index, row):
+                        applicable.append(replacement)
+                        break
+            item.text, count = _apply_simultaneous_entity_replacements(item.text, applicable)
             file_changes += count
         if file_changes:
             write_srt(items, path)
@@ -519,23 +694,34 @@ def sync_series_replacements_to_records(
     for episode in evidence_catalog.values():
         record = episode["record"]
         record_changes = 0
-        for item in record.get("items", []):
+        episode_key = str(episode.get("episode", ""))
+        for position, item in enumerate(record.get("items", []), 1):
             if not isinstance(item, dict):
                 continue
+            try:
+                item_index = int(item.get("index", position))
+            except (TypeError, ValueError):
+                item_index = position
             value = item.get("final_translation")
             if isinstance(value, str):
-                item["final_translation"], count = _apply_simultaneous_entity_replacements(value, validated)
-                record_changes += count
-        for batch in record.get("batches", []):
-            values = batch.get("final_translation") if isinstance(batch, dict) else None
-            if isinstance(values, list):
-                batch["final_translation"] = [
-                    _apply_simultaneous_entity_replacements(value, validated)[0] if isinstance(value, str) else value
-                    for value in values
+                applicable = [
+                    replacement
+                    for replacement in validated
+                    if item_index in replacement.get("eligible_rows", {}).get(episode_key, [])
                 ]
+                item["final_translation"], count = _apply_simultaneous_entity_replacements(value, applicable)
+                record_changes += count
         record["series_consistency"] = {
             "status": "applied" if record_changes else "checked",
-            "replacements": [{"kind": row["kind"], "from": row["from"], "to": row["to"]} for row in validated],
+            "replacements": [
+                {
+                    "kind": row["kind"],
+                    "source_forms": row.get("source_forms", []),
+                    "from": row["from"],
+                    "to": row["to"],
+                }
+                for row in validated
+            ],
             "changed_occurrences": record_changes,
         }
         write_translation_record(episode["record_path"], record)
@@ -703,16 +889,22 @@ def review_series_consistency_openai_compatible(
         "report as an untrusted hypothesis: episode reviewers may accidentally group different characters. Reconcile only those "
         "semantic entities across the whole series. Do not translate dialogue and do not invent entities. Prefer the localized names visibly "
         "used by a reliable embedded/visual subtitle track when that helps bilingual viewers match both lines; otherwise choose the best-supported "
-        "recurring form. Produce exact target-language variant replacements only when two forms clearly denote the same entity. Never replace "
+        "recurring form. Preserve meaningful aliases and nicknames exactly as the source uses them: Dominic/Nic, Alina/Allie, and Ella/El are not "
+        "inconsistencies merely because one is a full name and another is a nickname. Never replace a nickname with a formal name when the source "
+        "line uses the nickname, especially when dialogue explicitly asks to be called by that nickname. Produce exact target-language variant "
+        "replacements only when the same exact source spelling was translated inconsistently. Never replace "
         "ordinary vocabulary, pronouns, particles, or dialogue fragments. Never merge two people merely because they share a surname, role, scene, "
         "or similar spelling. A replacement is eligible only with confidence >= 0.85 and supporting evidence from at least two separate episodes. "
         "Every replacement must cite the exact episode and subtitle indexes where either the old target variant or canonical target variant is visible. "
         "Do not claim an episode or index that is absent from evidence_rows; the local program verifies every citation and rejects unsupported claims. "
         "If this standard is not met, record the uncertainty but emit no replacement. Each replacement must have kind person, family, place, "
-        "organization, rank, or title; from and to must both be target-language strings. Return JSON only with an empty subtitles array and this shape: "
+        "organization, rank, or title; from and to must both be target-language strings. source_forms must contain exactly one exact source-language "
+        "name spelling found in every cited source row. If two source aliases differ, emit separate replacements or no replacement; never combine aliases "
+        "to force one canonical full name. Return JSON only with an empty subtitles array and this shape: "
         '{"review":{"summary":"..."},"consistency":{"decisions":[{"kind":"person","source_aliases":["..."],'
         '"canonical_target":"...","reason":"..."}],"replacements":[{"kind":"person","from":"...","to":"...",'
-        '"confidence":0.9,"evidence":[{"episode":1,"indexes":[12,24]},{"episode":2,"indexes":[7]}],"reason":"..."}]},"subtitles":[]}.'
+        '"source_forms":["Dominic"],"confidence":0.9,"evidence":[{"episode":1,"indexes":[12,24]},{"episode":2,"indexes":[7]}],'
+        '"reason":"same source spelling had inconsistent target spellings"}]},"subtitles":[]}.'
     )
     result = chat_json_object_openai_compatible(
         prompt=prompt,
@@ -918,6 +1110,10 @@ def align_visual_with_asr_words(
                 join_asr_words(assigned),
                 statistics.fmean(word.probability for word in assigned) if assigned else 0.0,
                 statistics.fmean(row["temporal_scores"]) if row["temporal_scores"] else 0.0,
+                source_indexes=(),
+                visual_fragments=(row["visual_text"],) if row["visual_text"] else (),
+                audio_fragments=(join_asr_words(assigned),) if assigned else (),
+                audio_segments=tuple(sorted({word.segment for word in assigned})),
             )
         )
 
@@ -939,6 +1135,10 @@ def align_visual_with_asr_words(
                 join_asr_words(group),
                 statistics.fmean(word.probability for word in group),
                 0.75,
+                source_indexes=(),
+                visual_fragments=(),
+                audio_fragments=(join_asr_words(group),),
+                audio_segments=tuple(sorted({word.segment for word in group})),
             )
         )
     pairs = [pair for pair in pairs if pair.visual_text or pair.audio_text]
@@ -946,6 +1146,142 @@ def align_visual_with_asr_words(
     for index, pair in enumerate(pairs, 1):
         pair.index = index
     return pairs
+
+
+def _merge_evidence_fragments(fragments: Sequence[str]) -> str:
+    """Combine progressive OCR/ASR fragments without duplicating shared text."""
+    result = ""
+    for fragment in fragments:
+        value = re.sub(r"\s+", " ", (fragment or "").strip())
+        if not value:
+            continue
+        if not result:
+            result = value
+            continue
+        result_folded = result.casefold()
+        value_folded = value.casefold()
+        if value_folded in result_folded:
+            continue
+        if result_folded in value_folded:
+            result = value
+            continue
+        result_tokens = result.split()
+        value_tokens = value.split()
+        overlap = 0
+        for size in range(min(len(result_tokens), len(value_tokens)), 0, -1):
+            if [token.casefold() for token in result_tokens[-size:]] == [
+                token.casefold() for token in value_tokens[:size]
+            ]:
+                overlap = size
+                break
+        addition = " ".join(value_tokens[overlap:])
+        if not addition:
+            continue
+        if addition[:1] in ".,!?;:，。！？；：、)]}»”'\"":
+            result += addition
+        elif re.match(r"[\u3400-\u9fff]$", result) and re.match(r"^[\u3400-\u9fff]", addition):
+            result += addition
+        else:
+            result += " " + addition
+    return result.strip()
+
+
+def _visual_fragments_progress(value_a: str, value_b: str) -> bool:
+    first = normalize_ocr_text(value_a)
+    second = normalize_ocr_text(value_b)
+    if not first or not second:
+        return False
+    if first in second or second in first:
+        return True
+    # Similarity alone is only a fallback for progressive hard-subtitle OCR.
+    # Keep this strict so short but semantically different lines are not joined.
+    return difflib.SequenceMatcher(None, first, second).ratio() >= 0.78
+
+
+def group_aligned_subtitle_pairs(
+    pairs: list[AlignedSubtitlePair],
+    visual_kind: str = "ocr",
+    max_gap_seconds: float = 0.35,
+    max_duration_seconds: float = 6.0,
+) -> tuple[list[AlignedSubtitlePair], dict[str, int]]:
+    """Build utterance-level events while preserving the union of source times.
+
+    Hard-subtitle OCR often emits several snapshots for one spoken sentence.
+    Whisper segment IDs are used as the primary grouping signal; progressive
+    OCR text is a fallback. Soft subtitles already carry authored boundaries
+    and are deliberately left unchanged.
+    """
+    if not pairs:
+        return [], {"input_items": 0, "output_groups": 0, "merged_items": 0}
+
+    prepared: list[AlignedSubtitlePair] = []
+    for pair in pairs:
+        pair.source_indexes = pair.source_indexes or (pair.index,)
+        pair.visual_fragments = pair.visual_fragments or ((pair.visual_text,) if pair.visual_text else ())
+        pair.audio_fragments = pair.audio_fragments or ((pair.audio_text,) if pair.audio_text else ())
+        prepared.append(pair)
+
+    if visual_kind != "ocr":
+        return prepared, {
+            "input_items": len(prepared),
+            "output_groups": len(prepared),
+            "merged_items": 0,
+        }
+
+    grouped_rows: list[list[AlignedSubtitlePair]] = []
+    for pair in prepared:
+        if not grouped_rows:
+            grouped_rows.append([pair])
+            continue
+        current = grouped_rows[-1]
+        previous = current[-1]
+        group_start = srt_time_to_seconds(current[0].start)
+        pair_start = srt_time_to_seconds(pair.start)
+        pair_end = srt_time_to_seconds(pair.end)
+        previous_end = srt_time_to_seconds(previous.end)
+        gap = pair_start - previous_end
+        duration = pair_end - group_start
+        shared_segment = bool(set(previous.audio_segments) & set(pair.audio_segments))
+        progressive_visual = _visual_fragments_progress(previous.visual_text, pair.visual_text)
+        previous_evidence = previous.audio_text.strip() or previous.visual_text.strip()
+        sentence_ended = bool(re.search(r"[.!?。！？؟]\s*$", previous_evidence))
+        should_merge = (
+            -0.25 <= gap <= max_gap_seconds
+            and duration <= max_duration_seconds
+            and (shared_segment or progressive_visual)
+            and not sentence_ended
+        )
+        if should_merge:
+            current.append(pair)
+        else:
+            grouped_rows.append([pair])
+
+    result: list[AlignedSubtitlePair] = []
+    for index, row in enumerate(grouped_rows, 1):
+        visual_fragments = tuple(fragment for pair in row for fragment in pair.visual_fragments if fragment)
+        audio_fragments = tuple(fragment for pair in row for fragment in pair.audio_fragments if fragment)
+        confidences = [pair.audio_confidence for pair in row if pair.audio_text]
+        temporal = [pair.temporal_confidence for pair in row if pair.audio_text]
+        result.append(
+            AlignedSubtitlePair(
+                index=index,
+                start=row[0].start,
+                end=max(row, key=lambda pair: srt_time_to_seconds(pair.end)).end,
+                visual_text=_merge_evidence_fragments(visual_fragments),
+                audio_text=_merge_evidence_fragments(audio_fragments),
+                audio_confidence=statistics.fmean(confidences) if confidences else 0.0,
+                temporal_confidence=statistics.fmean(temporal) if temporal else 0.0,
+                source_indexes=tuple(source for pair in row for source in pair.source_indexes),
+                visual_fragments=visual_fragments,
+                audio_fragments=audio_fragments,
+                audio_segments=tuple(sorted({segment for pair in row for segment in pair.audio_segments})),
+            )
+        )
+    return result, {
+        "input_items": len(prepared),
+        "output_groups": len(result),
+        "merged_items": len(prepared) - len(result),
+    }
 
 
 def language_key(value: str) -> str:
@@ -1074,6 +1410,41 @@ def clean_translated_text(text: str) -> str:
     return re.sub(r"\s+", " ", text.replace("\n", " ")).strip()
 
 
+ARABIC_DIACRITICS_RE = re.compile(
+    "[\u0610-\u061a\u064b-\u065f\u0670\u06d6-\u06ed]"
+)
+
+
+def is_arabic_target_language(target_language: str) -> bool:
+    return str(target_language or "").strip().casefold() in {"arabic", "ar", "阿拉伯语"}
+
+
+def normalize_target_language_text(text: str, target_language: str) -> str:
+    """Apply safe, deterministic typography cleanup after semantic review."""
+    value = clean_translated_text(text)
+    if is_arabic_target_language(target_language):
+        # Short-form Arabic captions are conventionally unvocalized. Removing
+        # harakat also prevents a guessed suffix vowel (مشكلتكِ/مشكلتكَ) from
+        # displaying a gender claim that the source evidence did not support.
+        value = ARABIC_DIACRITICS_RE.sub("", value).replace("ـ", "")
+    return value
+
+
+def target_language_output_guidance(target_language: str) -> str:
+    if not is_arabic_target_language(target_language):
+        return ""
+    return (
+        "Arabic target-language rule: write normal unvocalized social-video Arabic without harakat. "
+        "Track the grammatical gender of both speaker and addressee from named entities and neighboring dialogue. "
+        "Use gendered verbs, imperatives, adjectives, and pronouns only when that gender is supported by evidence. "
+        "If the addressee's gender is uncertain, do not guess from tone: rewrite the whole phrase naturally in a gender-neutral form. "
+        "For example, prefer مهلا or لحظة over انتظر/انتظري, and prefer ما خطبك؟ over a needlessly vocalized gender-marked form. "
+        "In review, explicitly audit gender agreement, but change only the indexed subtitles that have a supported error; "
+        "do not rewrite correct subtitles merely for stylistic variation. A supported unresolved gender mismatch is a real "
+        "meaning/fluency defect and must not receive a passing quality score. "
+    )
+
+
 def has_arabic_text(text: str) -> bool:
     return bool(re.search(r"[\u0600-\u06ff]", text))
 
@@ -1094,15 +1465,29 @@ def strip_isolated_ocr_digits(text: str) -> str:
 
 
 def fetch_chat_completion_json(url: str, request_data: bytes, api_key: str, timeout_seconds: int) -> dict:
+    block_private_network = os.environ.get("VIDEO_GATEWAY_BLOCK_PRIVATE_NETWORK") == "1"
+    if block_private_network:
+        from web_gateway.security import validate_public_http_url
+
+        url = validate_public_http_url(url)
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json; charset=utf-8",
         "Accept": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) video-dedup-local/1.0",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) local-short-drama-studio/1.0",
     }
     request = urllib.request.Request(url, data=request_data, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        if block_private_network:
+            class NoRedirect(urllib.request.HTTPRedirectHandler):
+                def redirect_request(self, req, fp, code, msg, response_headers, newurl):
+                    raise urllib.error.HTTPError(newurl, code, "远程 LLM 接口不允许重定向", response_headers, fp)
+
+            opener = urllib.request.build_opener(NoRedirect())
+            response_context = opener.open(request, timeout=timeout_seconds)
+        else:
+            response_context = urllib.request.urlopen(request, timeout=timeout_seconds)
+        with response_context as response:
             return json.loads(response.read().decode("utf-8"))
     except UnicodeEncodeError as exc:
         try:
@@ -1118,12 +1503,18 @@ def fetch_chat_completion_json(url: str, request_data: bytes, api_key: str, time
         session = requests.Session()
         session.trust_env = False
         try:
-            response = session.post(url, data=request_data, headers=headers, timeout=timeout_seconds)
+            response = session.post(
+                url,
+                data=request_data,
+                headers=headers,
+                timeout=timeout_seconds,
+                allow_redirects=not block_private_network,
+            )
         except requests.exceptions.Timeout as timeout_exc:
             raise socket.timeout(str(timeout_exc)) from timeout_exc
         except requests.exceptions.RequestException as request_exc:
             raise urllib.error.URLError(str(request_exc)) from request_exc
-        if response.status_code >= 400:
+        if response.status_code >= 400 or (block_private_network and response.is_redirect):
             raise urllib.error.HTTPError(
                 url,
                 response.status_code,
@@ -1140,12 +1531,16 @@ def fetch_chat_completion_json_with_slot(
     api_key: str,
     timeout_seconds: int,
     label: str,
+    slot_limit: int | None = None,
 ) -> dict:
     """Send one request while respecting the machine-wide LLM concurrency cap."""
-    try:
-        limit = max(1, int(os.environ.get("VIDEO_DEDUP_GLOBAL_LLM_WORKERS", "5")))
-    except ValueError:
-        limit = 5
+    if slot_limit is None:
+        try:
+            limit = max(1, int(os.environ.get("VIDEO_DEDUP_GLOBAL_LLM_WORKERS", "5")))
+        except ValueError:
+            limit = 5
+    else:
+        limit = max(1, int(slot_limit))
     with global_llm_slot(limit, label):
         return fetch_chat_completion_json(url, request_data, api_key, timeout_seconds)
 
@@ -1672,6 +2067,49 @@ def _parse_indexed_translation_content(
     return parsed
 
 
+def _recover_complete_indexed_translation_rows(
+    content: str,
+    requested_indexes: list[int],
+) -> dict[int, str]:
+    """Recover only fully formed row objects from a truncated translations array."""
+    marker = re.search(r'"translations"\s*:\s*\[', content)
+    if not marker:
+        return {}
+    allowed = set(requested_indexes)
+    decoder = json.JSONDecoder()
+    position = marker.end()
+    recovered: dict[int, str] = {}
+    while position < len(content):
+        while position < len(content) and (content[position].isspace() or content[position] == ","):
+            position += 1
+        if position >= len(content) or content[position] == "]":
+            break
+        if content[position] != "{":
+            break
+        try:
+            row, end_position = decoder.raw_decode(content, position)
+        except json.JSONDecodeError:
+            # The first object that cannot be decoded is the truncated tail.
+            # Never keep a half-written subtitle or scan beyond it.
+            break
+        if not isinstance(row, dict):
+            break
+        try:
+            index = int(row.get("index"))
+        except (TypeError, ValueError):
+            break
+        text = row.get("text")
+        if not isinstance(text, str):
+            break
+        if index in recovered:
+            # Ambiguous duplicate rows are not safe to salvage.
+            return {}
+        if index in allowed:
+            recovered[index] = clean_translated_text(text)
+        position = end_position
+    return recovered
+
+
 def chat_indexed_translations_openai_compatible(
     *,
     prompt: str,
@@ -1689,90 +2127,123 @@ def chat_indexed_translations_openai_compatible(
     base_url = (os.environ.get("OPENAI_BASE_URL") or "https://theruta.ai/api/v1/chat/completions").rstrip("/")
     url = base_url if base_url.endswith("/chat/completions") else f"{base_url}/chat/completions"
     timeout_seconds = int(os.environ.get("LLM_TIMEOUT_SECONDS", "600"))
-    max_attempts = int(os.environ.get("LLM_MAX_ATTEMPTS", "3"))
+    # One semantic request per recovery round by default: at most three paid
+    # requests for one translation job. Operators may still opt into extra
+    # transport attempts explicitly through LLM_MAX_ATTEMPTS.
+    max_attempts = max(1, int(os.environ.get("LLM_MAX_ATTEMPTS", "1")))
+    max_rounds = max(1, int(os.environ.get("LLM_TRANSLATION_ROUNDS", "3")))
     max_tokens = max(1024, int(os.environ.get("LLM_MAX_OUTPUT_TOKENS", "8192")))
     collected: dict[int, str] = {}
     print(f"{log_label}请求: model={model}, endpoint={url}, items={len(item_indexes)}, indexed=yes")
-
-    for attempt in range(1, max_attempts + 1):
+    last_error: Exception | None = None
+    for round_number in range(1, max_rounds + 1):
         missing = [index for index in item_indexes if index not in collected]
         if not missing:
             break
-        attempt_payload = dict(user_payload)
-        attempt_payload.update(
-            {
-                "expected_count": len(item_indexes),
-                "requested_indexes": missing,
-                "expected_return_count": len(missing),
-                "output_format": {"translations": [{"index": missing[0], "text": "translated subtitle"}]},
-            }
-        )
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": json.dumps(attempt_payload, ensure_ascii=False)},
-            ],
-            "temperature": 0.1,
-            "max_tokens": max_tokens,
-        }
-        request_data = json.dumps(payload, ensure_ascii=True).encode("utf-8")
-        started = time.perf_counter()
-        try:
+        if round_number > 1:
+            delay = min(30, 5 * (2 ** (round_number - 2)))
             print(
-                f"{log_label}尝试 {attempt}/{max_attempts}，待返回 {len(missing)} 条，"
-                f"超时 {timeout_seconds} 秒"
+                f"{log_label}开启初译回退轮次 {round_number}/{max_rounds}，仍缺 {len(missing)} 条；"
+                f"等待 {delay} 秒并将重试请求限制为全局 2 并发。"
             )
-            data = fetch_chat_completion_json_with_slot(url, request_data, api_key, timeout_seconds, log_label)
-            print(f"{log_label}返回，用时 {time.perf_counter() - started:.1f} 秒")
-            try:
-                content = data["choices"][0]["message"]["content"].strip()
-            except (KeyError, IndexError, TypeError, AttributeError) as exc:
-                safe_preview = json.dumps(data, ensure_ascii=False)[:500]
-                raise RuntimeError(f"返回格式无效: {safe_preview}") from exc
-            if not content:
-                raise RuntimeError("返回了空内容")
-            parsed = _parse_indexed_translation_content(content, missing)
-            collected.update(parsed)
-            remaining = [index for index in item_indexes if index not in collected]
-            if remaining:
-                print(
-                    f"{log_label}本轮收到 {len(parsed)} 条，仍缺 {len(remaining)} 条；"
-                    f"将只补发缺失索引: {remaining[:20]}{'...' if len(remaining) > 20 else ''}"
-                )
-            else:
-                print(f"{log_label}成功: items={len(collected)}, indexed=yes")
+            time.sleep(delay)
+
+        for attempt in range(1, max_attempts + 1):
+            missing = [index for index in item_indexes if index not in collected]
+            if not missing:
                 break
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            retryable = exc.code in {403, 408, 409, 429, 500, 502, 503, 504}
-            if not retryable or attempt >= max_attempts:
-                raise RuntimeError(f"{log_label}失败: HTTP {exc.code} {body}") from exc
-            print(f"{log_label}HTTP {exc.code}，准备重试。")
-        except urllib.error.URLError as exc:
-            if attempt >= max_attempts:
-                raise RuntimeError(f"{log_label}连接失败: {exc}") from exc
-            print(f"{log_label}连接失败，准备重试: {exc}")
-        except (http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError, ssl.SSLError) as exc:
-            if attempt >= max_attempts:
-                raise RuntimeError(f"{log_label}远端连接中断: {exc}") from exc
-            print(f"{log_label}远端连接中断，准备重试: {exc}")
-        except (TimeoutError, socket.timeout) as exc:
-            if attempt >= max_attempts:
-                raise RuntimeError(f"{log_label}读取超时: {timeout_seconds} 秒") from exc
-            print(f"{log_label}读取超时，准备重试。")
-        except (RuntimeError, json.JSONDecodeError) as exc:
-            if attempt >= max_attempts:
-                raise RuntimeError(f"{log_label}返回内容连续不可用: {exc}") from exc
-            print(f"{log_label}返回内容不可用，准备重试 ({attempt}/{max_attempts}): {exc}")
-        if attempt < max_attempts:
-            time.sleep(2 ** attempt)
+            attempt_payload = dict(user_payload)
+            attempt_payload.update(
+                {
+                    "expected_count": len(item_indexes),
+                    "requested_indexes": missing,
+                    "expected_return_count": len(missing),
+                    "output_format": {"translations": [{"index": missing[0], "text": "translated subtitle"}]},
+                }
+            )
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": json.dumps(attempt_payload, ensure_ascii=False)},
+                ],
+                "temperature": 0.1,
+                "max_tokens": max_tokens,
+            }
+            request_data = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+            started = time.perf_counter()
+            try:
+                print(
+                    f"{log_label}轮次 {round_number}/{max_rounds}，尝试 {attempt}/{max_attempts}，"
+                    f"待返回 {len(missing)} 条，超时 {timeout_seconds} 秒"
+                )
+                retry_slot_limit = 2 if round_number > 1 else None
+                data = fetch_chat_completion_json_with_slot(
+                    url, request_data, api_key, timeout_seconds, log_label, retry_slot_limit
+                )
+                print(f"{log_label}返回，用时 {time.perf_counter() - started:.1f} 秒")
+                try:
+                    content = data["choices"][0]["message"]["content"].strip()
+                except (KeyError, IndexError, TypeError, AttributeError) as exc:
+                    safe_preview = json.dumps(data, ensure_ascii=False)[:500]
+                    raise RuntimeError(f"返回格式无效: {safe_preview}") from exc
+                if not content:
+                    raise RuntimeError("返回了空内容")
+                try:
+                    parsed = _parse_indexed_translation_content(content, missing)
+                except RuntimeError as exc:
+                    recovered = _recover_complete_indexed_translation_rows(content, missing)
+                    if not recovered:
+                        raise
+                    parsed = recovered
+                    print(
+                        f"{log_label}响应 JSON 截断，已安全抢救 {len(recovered)} 条完整索引；"
+                        "截断中的半条字幕已丢弃。"
+                    )
+                    last_error = exc
+                collected.update(parsed)
+                remaining = [index for index in item_indexes if index not in collected]
+                if remaining:
+                    print(
+                        f"{log_label}本轮收到 {len(parsed)} 条，仍缺 {len(remaining)} 条；"
+                        f"将携带完整源上下文只补发缺失索引: {remaining[:20]}{'...' if len(remaining) > 20 else ''}"
+                    )
+                else:
+                    print(f"{log_label}成功: items={len(collected)}, indexed=yes")
+                    break
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace")
+                retryable = exc.code in {403, 408, 409, 429, 500, 502, 503, 504}
+                if not retryable:
+                    raise RuntimeError(f"{log_label}失败: HTTP {exc.code} {body}") from exc
+                last_error = RuntimeError(f"HTTP {exc.code} {body}")
+                print(f"{log_label}HTTP {exc.code}，准备重试。")
+            except urllib.error.URLError as exc:
+                last_error = exc
+                print(f"{log_label}连接失败，准备重试: {exc}")
+            except (http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError, ssl.SSLError) as exc:
+                last_error = exc
+                print(f"{log_label}远端连接中断，准备重试: {exc}")
+            except (TimeoutError, socket.timeout) as exc:
+                last_error = exc
+                print(f"{log_label}读取超时，准备重试。")
+            except (RuntimeError, json.JSONDecodeError) as exc:
+                last_error = exc
+                print(
+                    f"{log_label}返回内容不可用，准备重试 "
+                    f"(轮次 {round_number}/{max_rounds}，尝试 {attempt}/{max_attempts}): {exc}"
+                )
+            if attempt < max_attempts:
+                time.sleep(2 ** attempt)
+
+        if collected and len(collected) < len(item_indexes):
+            print(f"{log_label}当前任务内已累计保存 {len(collected)}/{len(item_indexes)} 条完整译文。")
 
     missing = [index for index in item_indexes if index not in collected]
     if missing:
         raise RuntimeError(
-            f"{log_label}补发后仍缺少 {len(missing)} 条字幕，索引: "
-            f"{missing[:30]}{'...' if len(missing) > 30 else ''}"
+            f"{log_label}经过 {max_rounds} 轮初译后仍缺少 {len(missing)} 条字幕，索引: "
+            f"{missing[:30]}{'...' if len(missing) > 30 else ''}；最后错误: {last_error}"
         )
     return [collected[index] for index in item_indexes]
 
@@ -1932,6 +2403,7 @@ def review_translations_openai_compatible(
         "Return JSON only with this shape: "
         '{"review":{"bigger_problem":"source|translation_a|translation_b|both_translations|none","summary":"...","examples":[{"index":1,"issue":"..."}]},"subtitles":["..."]}.'
     )
+    prompt += target_language_output_guidance(target_language)
     result = chat_json_object_openai_compatible(
         prompt=prompt,
         user_payload={
@@ -1990,6 +2462,7 @@ def review_single_translation_openai_compatible(
         '{"review":{"bigger_problem":"source|initial_translation|both|none","summary":"...","examples":[],"entities":[{"kind":"person|family|place|organization|rank|title","source_aliases":["..."],"target_variants":["..."],"preferred_target":"...","evidence_indexes":[1],"confidence":0.9}]},'
         '"edits":[{"action":"replace|merge|delete","indexes":[1],"text":"...","reason":"..."}],"subtitles":[]}.'
     )
+    prompt += target_language_output_guidance(target_language)
     prompt += glossary_prompt
     result = chat_json_object_openai_compatible(
         prompt=prompt,
@@ -2070,15 +2543,15 @@ def translate_texts_with_optional_review(
         return translation_a
 
 
-def translate_dual_source_texts_openai_compatible(
-    pairs: list[AlignedSubtitlePair],
+def build_dual_source_translation_prompt(
     target_language: str,
     visual_language: str,
     audio_language: str,
-    model: str,
     visual_kind: str = "ocr",
     glossary_prompt: str = "",
-) -> list[str]:
+    localization_instruction: str = "",
+) -> str:
+    """Build the authoritative dual-source contract shared by API and Agent modes."""
     prompt = (
         "You are a professional short-drama subtitle translator using two synchronized evidence sources. "
         f"The visual source is {visual_kind} text in {visual_language}; it may contain OCR noise when the kind is OCR. "
@@ -2094,13 +2567,27 @@ def translate_dual_source_texts_openai_compatible(
         "Never move words that belong to neighboring subtitle indexes into the current item. "
         "Do not concatenate two alternative readings. Prefer the source that is clearer and more contextually consistent. "
         "An empty source means that source missed the item; never invent text merely to fill an empty field. "
+        "Empty ASR is not proof that OCR is dialogue. Never translate, transliterate, preserve, or reconstruct platform branding, "
+        "watermarks, logos, usernames, URLs, email addresses, player controls, UI labels, or repeated overlay artifacts. "
+        "This includes OCR variants such as ReelShort, ReelShorl, ReelShor, RealShort, isolated branding letters such as R, "
+        "and repeated mixtures of those fragments. Decide from combined evidence: repetition at unrelated times, near-identical "
+        "brand/logo variants, empty or unrelated ASR, and lack of connection to neighboring dialogue are strong overlay signals. "
+        "Do not use a keyword alone to delete genuine story-relevant messages, signs, titles, or onscreen narrative text. "
+        "For pure overlay/noise return the required index with empty text; for mixed dialogue and overlay remove only the overlay "
+        "and translate the supported dialogue. Never phoneticize a watermark merely to avoid an empty result. "
         "Do not add explanations, timestamps, numbering, names, plot, or unsupported dialogue. "
         "The user payload contains requested_indexes. Return exactly one object for every requested index, even when its translation is empty. "
         "Never merge, renumber, omit, or invent indexes. Return JSON only in this shape: "
         '{"translations":[{"index":1,"text":"translated subtitle"}]}.'
     )
-    prompt += glossary_prompt
-    payload_items = [
+    if localization_instruction:
+        prompt += f" Localization strategy: {localization_instruction.strip()} "
+    return prompt + target_language_output_guidance(target_language) + glossary_prompt
+
+
+def aligned_pairs_payload(pairs: Sequence[AlignedSubtitlePair], visual_kind: str = "ocr") -> list[dict]:
+    """Serialize locally aligned evidence identically for API and Agent execution."""
+    return [
         {
             "index": pair.index,
             "start": pair.start,
@@ -2113,6 +2600,25 @@ def translate_dual_source_texts_openai_compatible(
         }
         for pair in pairs
     ]
+
+
+def translate_dual_source_texts_openai_compatible(
+    pairs: list[AlignedSubtitlePair],
+    target_language: str,
+    visual_language: str,
+    audio_language: str,
+    model: str,
+    visual_kind: str = "ocr",
+    glossary_prompt: str = "",
+) -> list[str]:
+    prompt = build_dual_source_translation_prompt(
+        target_language,
+        visual_language,
+        audio_language,
+        visual_kind,
+        glossary_prompt,
+    )
+    payload_items = aligned_pairs_payload(pairs, visual_kind)
     return chat_indexed_translations_openai_compatible(
         prompt=prompt,
         user_payload={
@@ -2150,6 +2656,7 @@ def review_dual_source_translations_openai_compatible(
         f"Keep exactly {len(pairs)} subtitles in the same order. Return JSON only with this shape: "
         '{"review":{"bigger_problem":"visual_source|audio_asr|translation_a|translation_b|both_translations|none","summary":"...","examples":[{"index":1,"issue":"..."}]},"subtitles":["..."]}.'
     )
+    prompt += target_language_output_guidance(target_language)
     result = chat_json_object_openai_compatible(
         prompt=prompt,
         user_payload={
@@ -2242,6 +2749,7 @@ def review_risky_dual_source_translations_openai_compatible(
         '"source_aliases":["..."],"target_variants":["..."],"preferred_target":"...","evidence_indexes":[1],"confidence":0.9}]},'
         '"edits":[{"action":"replace|merge|delete","indexes":[1],"text":"...","reason":"..."}],"subtitles":[]}.'
     )
+    prompt += target_language_output_guidance(target_language)
     prompt += glossary_prompt
     review_items = []
     for index in review_indexes:
@@ -2319,6 +2827,7 @@ def translate_dual_source_srts(
     translation_record_path: Path | None = None,
     record_context: dict | None = None,
     glossary: dict | None = None,
+    localization_instruction: str = "",
 ) -> None:
     pairs = align_visual_and_audio_subtitles(
         parse_srt(visual_srt),
@@ -2327,9 +2836,12 @@ def translate_dual_source_srts(
     )
     if not pairs:
         raise ValueError("OCR/软字幕与 ASR 都没有可对齐的字幕。")
+    pairs, grouping = group_aligned_subtitle_pairs(pairs, visual_kind)
     for pair in pairs:
         score_aligned_pair(pair, visual_language, audio_language, visual_kind)
     glossary_prompt = build_glossary_prompt(glossary)
+    if localization_instruction:
+        glossary_prompt += f"\nLocalization strategy: {localization_instruction.strip()}\n"
     record = {
         "schema_version": 1,
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -2346,6 +2858,7 @@ def translate_dual_source_srts(
             "review_model": review_model.strip() or model,
             "confidence_threshold": confidence_threshold,
             "word_timestamps": bool(audio_words_path and audio_words_path.is_file()),
+            "utterance_grouping": grouping,
             "glossary": (
                 {"id": glossary.get("id"), "name": glossary.get("name"), "source": glossary.get("_source_path")}
                 if glossary else None
@@ -2356,10 +2869,14 @@ def translate_dual_source_srts(
                 "index": pair.index,
                 "start": pair.start,
                 "end": pair.end,
+                "source_indexes": list(pair.source_indexes),
                 "visual_source_raw": pair.visual_text,
                 "visual_source_clean": clean_text_for_translation(pair.visual_text, visual_kind),
+                "visual_source_fragments": list(pair.visual_fragments),
                 "audio_asr_raw": pair.audio_text,
                 "audio_asr_clean": clean_text_for_translation(pair.audio_text, "asr"),
+                "audio_asr_fragments": list(pair.audio_fragments),
+                "audio_asr_segments": list(pair.audio_segments),
                 "asr_word_confidence": round(pair.audio_confidence, 4),
                 "temporal_confidence": round(pair.temporal_confidence, 4),
                 "combined_confidence": round(pair.confidence_score, 4),
@@ -2376,7 +2893,8 @@ def translate_dual_source_srts(
     }
     write_translation_record(translation_record_path, record)
     print(
-        f"双源时间轴对齐完成: items={len(pairs)}, "
+        f"双源时间轴对齐完成: raw={grouping['input_items']}, groups={len(pairs)}, "
+        f"merged={grouping['merged_items']}, "
         f"word_timestamps={'yes' if audio_words_path and audio_words_path.is_file() else 'no'}"
     )
     translated: list[str] = []
@@ -2418,6 +2936,7 @@ def translate_dual_source_srts(
                 record["reviews"].append(review_diagnostics)
             else:
                 final = translation_a
+            final = [normalize_target_language_text(text, target_language) for text in final]
             for offset, text in enumerate(final):
                 item = record["items"][start + offset]
                 item["final_translation"] = text
@@ -2493,6 +3012,7 @@ def translate_texts_openai_compatible(
         "Never merge, renumber, omit, or invent indexes. Return JSON only in this shape: "
         '{"translations":[{"index":1,"text":"translated subtitle"}]}.'
     )
+    prompt += target_language_output_guidance(target_language)
     prompt += glossary_prompt
     cleaned_texts = [clean_text_for_translation(text, source_kind) for text in texts]
     indexed_items = [
@@ -2529,6 +3049,7 @@ def translate_srt(
     translation_record_path: Path | None = None,
     record_context: dict | None = None,
     glossary: dict | None = None,
+    localization_instruction: str = "",
 ) -> None:
     items = parse_srt(input_srt)
     if not items:
@@ -2541,6 +3062,8 @@ def translate_srt(
         raise ValueError("provider 目前支持 none 或 openai-compatible")
     texts = [item.text for item in items]
     glossary_prompt = build_glossary_prompt(glossary)
+    if localization_instruction:
+        glossary_prompt += f"\nLocalization strategy: {localization_instruction.strip()}\n"
     record = {
         "schema_version": 1,
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -2590,6 +3113,7 @@ def translate_srt(
                 texts[start:end], target_language, source_language, model, enable_review,
                 model_b, review_model, source_kind, batch_diagnostics, glossary_prompt, review_timed_items
             )
+            batch_result = [normalize_target_language_text(text, target_language) for text in batch_result]
             record["batches"].append(batch_diagnostics)
             for offset, text in enumerate(batch_diagnostics.get("initial_translation", batch_result)):
                 record["items"][start + offset]["initial_translation"] = text
@@ -3010,6 +3534,8 @@ def render_subtitle(
     hardware_acceleration: str,
     ffmpeg: str,
     dry_run: bool,
+    cover_mode: str = "blur",
+    cover_blur_sigma: float = 22.0,
 ) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     if mode == "soft":
@@ -3064,7 +3590,12 @@ def render_subtitle(
         raise ValueError("cover_y_percent 必须在 0 到 100 之间")
     if not 0 < cover_height_percent <= 100 or cover_y_percent + cover_height_percent > 100:
         raise ValueError("字幕区域高度必须大于 0，且字幕区域不能超出画面")
+    if cover_mode not in {"blur", "color"}:
+        raise ValueError("cover_mode 必须是 blur 或 color")
+    if not 0.5 <= cover_blur_sigma <= 100:
+        raise ValueError("cover_blur_sigma 必须在 0.5 到 100 之间")
     cover_drawbox_options = ""
+    cover_blur_options: tuple[int, int, int, int] | None = None
     if should_cover:
         if not 0 <= cover_opacity <= 1:
             raise ValueError("cover_opacity 必须在 0 到 1 之间")
@@ -3078,11 +3609,18 @@ def render_subtitle(
                 print(f"OCR 自动字幕区域: x {cover_x_percent:.2f}%，宽度 {cover_width_percent:.2f}%，y {cover_y_percent:.2f}%，高度 {cover_height_percent:.2f}%")
             except RuntimeError as exc:
                 print(f"OCR 自动识别字幕区域失败，改用手动遮盖参数: {exc}", file=sys.stderr)
-        x = f"iw*{cover_x_percent / 100:.6f}"
-        y = f"ih*{cover_y_percent / 100:.6f}"
-        w = f"iw*{cover_width_percent / 100:.6f}"
-        h = f"ih*{cover_height_percent / 100:.6f}"
-        cover_drawbox_options = f"drawbox=x={x}:y={y}:w={w}:h={h}:color={cover_color}@{cover_opacity:.4f}:t=fill"
+        if cover_mode == "color":
+            x = f"iw*{cover_x_percent / 100:.6f}"
+            y = f"ih*{cover_y_percent / 100:.6f}"
+            w = f"iw*{cover_width_percent / 100:.6f}"
+            h = f"ih*{cover_height_percent / 100:.6f}"
+            cover_drawbox_options = f"drawbox=x={x}:y={y}:w={w}:h={h}:color={cover_color}@{cover_opacity:.4f}:t=fill"
+        else:
+            x_px = max(0, min(video_width - 2, int(round(video_width * cover_x_percent / 100))))
+            y_px = max(0, min(video_height - 2, int(round(video_height * cover_y_percent / 100))))
+            w_px = max(2, min(video_width - x_px, int(round(video_width * cover_width_percent / 100))))
+            h_px = max(2, min(video_height - y_px, int(round(video_height * cover_height_percent / 100))))
+            cover_blur_options = (x_px, y_px, w_px, h_px)
     with tempfile.TemporaryDirectory(prefix="subtitle-render-") as render_tmp:
         render_items = prepare_items_for_ass_render(
             subtitle,
@@ -3105,13 +3643,17 @@ def render_subtitle(
             cover_width_percent,
             cover_height_percent,
         )
+        enable_expression = ffmpeg_subtitle_enable_expression(render_items) if should_cover else ""
         if should_cover and cover_drawbox_options:
-            enable_expression = ffmpeg_subtitle_enable_expression(render_items)
             if enable_expression:
                 filters.append(f"{cover_drawbox_options}:enable='{enable_expression}'")
             else:
                 print("字幕时间轴为空，跳过旧字幕蒙版。")
-        filters.append(f"subtitles=filename='{ffmpeg_subtitle_path(render_subtitle_path)}'")
+        subtitle_filter = f"subtitles=filename='{ffmpeg_subtitle_path(render_subtitle_path)}'"
+        use_blur_cover = bool(should_cover and cover_blur_options and enable_expression)
+        if should_cover and cover_blur_options and not enable_expression:
+            print("字幕时间轴为空，跳过旧字幕局部模糊。")
+        filters.append(subtitle_filter)
         resolved_acceleration = video_dedup.resolve_hardware_acceleration(ffmpeg, hardware_acceleration)
         encoder_args: list[str]
         if resolved_acceleration == "nvidia":
@@ -3125,23 +3667,21 @@ def render_subtitle(
         else:
             encoder_args = ["-c:v", "libx264", "-preset", "medium", "-crf", str(quality)]
         print(f"实际视频编码器: {video_dedup.video_encoder_name(resolved_acceleration)} ({video_dedup.video_encoder_label(resolved_acceleration)})")
-        command = [
-            ffmpeg,
-            "-hide_banner",
-            "-y",
-            "-i",
-            str(video),
-            "-vf",
-            ",".join(filters),
-            "-map",
-            "0:v",
-            "-map",
-            "0:a?",
-            *encoder_args,
-            "-c:a",
-            "copy",
-            str(output),
-        ]
+        command = [ffmpeg, "-hide_banner", "-y", "-i", str(video)]
+        if use_blur_cover:
+            x_px, y_px, w_px, h_px = cover_blur_options
+            blur_graph = (
+                "[0:v]split=2[coverbase][coversource];"
+                f"[coversource]crop={w_px}:{h_px}:{x_px}:{y_px},"
+                f"gblur=sigma={cover_blur_sigma:.3f}:steps=2[coverblur];"
+                f"[coverbase][coverblur]overlay={x_px}:{y_px}:"
+                f"enable='{enable_expression}'[covered];"
+                f"[covered]{subtitle_filter}[vout]"
+            )
+            command += ["-filter_complex", blur_graph, "-map", "[vout]"]
+        else:
+            command += ["-vf", ",".join(filters), "-map", "0:v"]
+        command += ["-map", "0:a?", *encoder_args, "-c:a", "copy", str(output)]
         try:
             run(command, dry_run)
         except subprocess.CalledProcessError:
@@ -3227,11 +3767,13 @@ def make_parser() -> argparse.ArgumentParser:
     render.add_argument("--cover-height-percent", type=float, default=11.0, help="遮盖区域高度百分比")
     render.add_argument("--cover-opacity", type=float, default=0.82, help="遮盖蒙版透明度")
     render.add_argument("--cover-color", default="white", help="遮盖蒙版颜色，默认 white")
+    render.add_argument("--cover-mode", choices=("blur", "color"), default="blur", help="blur=局部高斯模糊；color=纯色半透明蒙版")
+    render.add_argument("--cover-blur-sigma", type=float, default=22.0, help="局部高斯模糊强度")
     render.add_argument("--cover-ocr-language", default="auto", help="自动识别遮盖区域时使用的 OCR 语言")
     render.add_argument("--font-name", default="Arial")
     render.add_argument("--font-size", type=int, default=28)
     render.add_argument("--quality", type=int, default=15, help="烧录字幕的视频质量值，越低越清晰")
-    render.add_argument("--hardware-acceleration", choices=("auto", "nvidia", "amd", "intel", "apple", "cpu"), default="auto")
+    render.add_argument("--hardware-acceleration", choices=("auto", "nvidia", "amd", "intel", "apple", "cpu"), default="nvidia")
     return parser
 
 
@@ -3312,6 +3854,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.hardware_acceleration,
                 ffmpeg,
                 args.dry_run,
+                args.cover_mode,
+                args.cover_blur_sigma,
             )
         return 0
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:

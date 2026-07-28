@@ -1,0 +1,2 @@
+faster-whisper==1.2.1
+nvidia-cudnn-cu12==9.10.2.21

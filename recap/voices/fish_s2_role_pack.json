@@ -1,0 +1,665 @@
+{
+  "schema_version": 1,
+  "profiles": [
+    {
+      "voice_id": "en_playful_young_female",
+      "display_name": "英语·俏皮灵动年轻女声",
+      "gender": "female",
+      "languages": [
+        "English"
+      ],
+      "style": [
+        "playful",
+        "bright",
+        "youthful"
+      ],
+      "age_group": "young_adult",
+      "role_archetype": "playful_heroine",
+      "source_kind": "synthetic_voice_design",
+      "review_status": "approved",
+      "quality_score": 10.0,
+      "reference_audio": "en_playful_young_female/reference.wav",
+      "reference_text": "A single choice can change an entire family. Tonight the truth comes out, old promises are tested, and no one can avoid the decision waiting at the end.",
+      "reference_language": "English",
+      "preview_audio": "en_playful_young_female/preview.wav",
+      "preview_text": "No one expected the quiet stranger to know the family secret. By morning, every promise had changed and the truth could no longer stay hidden. What happened next forced every person in the house to choose a side.",
+      "default_speed": 1.04,
+      "target_loudness_mode": "match_source_program",
+      "engine": "reference_voice",
+      "model_version": "Fish Speech S2 Pro NF4",
+      "allowed_engines": [
+        "fish_s2"
+      ],
+      "generation_parameters": {
+        "temperature": 0.88,
+        "top_p": 0.9,
+        "top_k": 30
+      },
+      "design_instruction": "Young adult female narrator, playful, nimble and charming, with a bright natural smile in the voice. Contemporary and expressive, never shrill or childish.",
+      "provenance": {
+        "reference_generator": "Qwen3-TTS VoiceDesign",
+        "real_person": false
+      },
+      "preview_metrics": {
+        "duration_seconds": 10.82,
+        "sample_rate": 44100.0,
+        "rms": 0.064363,
+        "peak": 0.425049,
+        "clipping_ratio": 0.0,
+        "silence_ratio": 0.301381,
+        "technical_score": 10.0
+      },
+      "asr_validation": {
+        "transcript": "No one expected the quiet stranger to know the family secret. By morning, every promise had changed and the truth could no longer stay hidden. What happened next forced every person in the house to choose a side.",
+        "similarity": 1.0,
+        "language_probability": 1,
+        "passed": true
+      }
+    },
+    {
+      "voice_id": "en_elder_female",
+      "display_name": "英语·温厚年长女声",
+      "gender": "female",
+      "languages": [
+        "English"
+      ],
+      "style": [
+        "mature",
+        "warm",
+        "wise"
+      ],
+      "age_group": "senior",
+      "role_archetype": "wise_matriarch",
+      "source_kind": "synthetic_voice_design",
+      "review_status": "approved",
+      "quality_score": 9.93,
+      "reference_audio": "en_elder_female/reference.wav",
+      "reference_text": "A single choice can change an entire family. Tonight the truth comes out, old promises are tested, and no one can avoid the decision waiting at the end.",
+      "reference_language": "English",
+      "preview_audio": "en_elder_female/preview.wav",
+      "preview_text": "No one expected the quiet stranger to know the family secret. By morning, every promise had changed and the truth could no longer stay hidden.",
+      "default_speed": 0.94,
+      "target_loudness_mode": "match_source_program",
+      "engine": "reference_voice",
+      "model_version": "Fish Speech S2 Pro NF4",
+      "allowed_engines": [
+        "fish_s2"
+      ],
+      "generation_parameters": {
+        "temperature": 0.88,
+        "top_p": 0.9,
+        "top_k": 30
+      },
+      "design_instruction": "Senior female narrator, warm, wise and dignified, with a gently weathered lower register. Clear patient storytelling, never frail or theatrical.",
+      "provenance": {
+        "reference_generator": "Qwen3-TTS VoiceDesign",
+        "real_person": false
+      },
+      "preview_metrics": {
+        "duration_seconds": 8.963,
+        "sample_rate": 44100.0,
+        "rms": 0.079219,
+        "peak": 0.740234,
+        "clipping_ratio": 0.0,
+        "silence_ratio": 0.291835,
+        "technical_score": 10.0
+      },
+      "asr_validation": {
+        "transcript": "No one expected the quiet stranger to know the family's secret. By morning, every promise had changed, and the truth could no longer stay hidden.",
+        "similarity": 0.993,
+        "language_probability": 1,
+        "passed": true
+      }
+    },
+    {
+      "voice_id": "en_roguish_young_male",
+      "display_name": "英语·轻快不羁年轻男声",
+      "gender": "male",
+      "languages": [
+        "English"
+      ],
+      "style": [
+        "roguish",
+        "quick",
+        "confident"
+      ],
+      "age_group": "young_adult",
+      "role_archetype": "roguish_hero",
+      "source_kind": "synthetic_voice_design",
+      "review_status": "approved",
+      "quality_score": 10.0,
+      "reference_audio": "en_roguish_young_male/reference.wav",
+      "reference_text": "A single choice can change an entire family. Tonight the truth comes out, old promises are tested, and no one can avoid the decision waiting at the end.",
+      "reference_language": "English",
+      "preview_audio": "en_roguish_young_male/preview.wav",
+      "preview_text": "No one expected the quiet stranger to know the family secret. By morning, every promise had changed and the truth could no longer stay hidden.",
+      "default_speed": 1.04,
+      "target_loudness_mode": "match_source_program",
+      "engine": "reference_voice",
+      "model_version": "Fish Speech S2 Pro NF4",
+      "allowed_engines": [
+        "fish_s2"
+      ],
+      "generation_parameters": {
+        "temperature": 0.88,
+        "top_p": 0.9,
+        "top_k": 30
+      },
+      "design_instruction": "Young adult male narrator, quick-witted, lightly roguish and confident. Agile conversational rhythm with a subtle smile, natural rather than announcer-like.",
+      "provenance": {
+        "reference_generator": "Qwen3-TTS VoiceDesign",
+        "real_person": false
+      },
+      "preview_metrics": {
+        "duration_seconds": 8.173,
+        "sample_rate": 44100.0,
+        "rms": 0.086766,
+        "peak": 0.592285,
+        "clipping_ratio": 0.0,
+        "silence_ratio": 0.193057,
+        "technical_score": 10.0
+      },
+      "asr_validation": {
+        "transcript": "No one expected the quiet stranger to know the family secret. By morning every promise had changed and the truth could no longer stay hidden.",
+        "similarity": 1.0,
+        "language_probability": 1,
+        "passed": true
+      }
+    },
+    {
+      "voice_id": "en_elder_male",
+      "display_name": "英语·沉稳年长男声",
+      "gender": "male",
+      "languages": [
+        "English"
+      ],
+      "style": [
+        "mature",
+        "steady",
+        "wise"
+      ],
+      "age_group": "senior",
+      "role_archetype": "wise_patriarch",
+      "source_kind": "synthetic_voice_design",
+      "review_status": "approved",
+      "quality_score": 10.0,
+      "reference_audio": "en_elder_male/reference.wav",
+      "reference_text": "A single choice can change an entire family. Tonight the truth comes out, old promises are tested, and no one can avoid the decision waiting at the end.",
+      "reference_language": "English",
+      "preview_audio": "en_elder_male/preview.wav",
+      "preview_text": "No one expected the quiet stranger to know the family secret. By morning, every promise had changed and the truth could no longer stay hidden.",
+      "default_speed": 0.94,
+      "target_loudness_mode": "match_source_program",
+      "engine": "reference_voice",
+      "model_version": "Fish Speech S2 Pro NF4",
+      "allowed_engines": [
+        "fish_s2"
+      ],
+      "generation_parameters": {
+        "temperature": 0.88,
+        "top_p": 0.9,
+        "top_k": 30
+      },
+      "design_instruction": "Senior male narrator with a warm seasoned baritone, calm authority and deliberate pacing. Wise and reassuring, not booming or overly cinematic.",
+      "provenance": {
+        "reference_generator": "Qwen3-TTS VoiceDesign",
+        "real_person": false
+      },
+      "preview_metrics": {
+        "duration_seconds": 8.313,
+        "sample_rate": 44100.0,
+        "rms": 0.065524,
+        "peak": 0.553711,
+        "clipping_ratio": 0.0,
+        "silence_ratio": 0.246277,
+        "technical_score": 10.0
+      },
+      "asr_validation": {
+        "transcript": "No one expected the quiet stranger to know the family secret. By morning, every promise had changed and the truth could no longer stay hidden.",
+        "similarity": 1.0,
+        "language_probability": 1,
+        "passed": true
+      }
+    },
+    {
+      "voice_id": "en_child_girl",
+      "display_name": "英语·活泼女孩角色声",
+      "gender": "female",
+      "languages": [
+        "English"
+      ],
+      "style": [
+        "child",
+        "bright",
+        "curious"
+      ],
+      "age_group": "child_role",
+      "role_archetype": "child_girl",
+      "source_kind": "synthetic_voice_design",
+      "review_status": "approved",
+      "quality_score": 10.0,
+      "reference_audio": "en_child_girl/reference.wav",
+      "reference_text": "A single choice can change an entire family. Tonight the truth comes out, old promises are tested, and no one can avoid the decision waiting at the end.",
+      "reference_language": "English",
+      "preview_audio": "en_child_girl/preview.wav",
+      "preview_text": "No one expected the quiet stranger to know the family secret. By morning, every promise had changed and the truth could no longer stay hidden.",
+      "default_speed": 1.04,
+      "target_loudness_mode": "match_source_program",
+      "engine": "reference_voice",
+      "model_version": "Fish Speech S2 Pro NF4",
+      "allowed_engines": [
+        "fish_s2"
+      ],
+      "generation_parameters": {
+        "temperature": 0.88,
+        "top_p": 0.9,
+        "top_k": 30
+      },
+      "design_instruction": "Fictional child-girl character voice, bright, curious and clearly articulated. Youthful and lively but comfortable to hear, without squealing or imitation of a real child.",
+      "provenance": {
+        "reference_generator": "Qwen3-TTS VoiceDesign",
+        "real_person": false
+      },
+      "preview_metrics": {
+        "duration_seconds": 8.173,
+        "sample_rate": 44100.0,
+        "rms": 0.080259,
+        "peak": 0.558105,
+        "clipping_ratio": 0.0,
+        "silence_ratio": 0.273757,
+        "technical_score": 10.0
+      },
+      "asr_validation": {
+        "transcript": "No one expected the quiet stranger to know the family secret. By morning, every promise had changed and the truth could no longer stay hidden.",
+        "similarity": 1.0,
+        "language_probability": 1,
+        "passed": true
+      }
+    },
+    {
+      "voice_id": "en_child_boy",
+      "display_name": "英语·机灵男孩角色声",
+      "gender": "male",
+      "languages": [
+        "English"
+      ],
+      "style": [
+        "child",
+        "clever",
+        "energetic"
+      ],
+      "age_group": "child_role",
+      "role_archetype": "child_boy",
+      "source_kind": "synthetic_voice_design",
+      "review_status": "approved",
+      "quality_score": 10.0,
+      "reference_audio": "en_child_boy/reference.wav",
+      "reference_text": "A single choice can change an entire family. Tonight the truth comes out, old promises are tested, and no one can avoid the decision waiting at the end.",
+      "reference_language": "English",
+      "preview_audio": "en_child_boy/preview.wav",
+      "preview_text": "No one expected the quiet stranger to know the family secret. By morning, every promise had changed and the truth could no longer stay hidden. What happened next forced every person in the house to choose a side.",
+      "default_speed": 1.04,
+      "target_loudness_mode": "match_source_program",
+      "engine": "reference_voice",
+      "model_version": "Fish Speech S2 Pro NF4",
+      "allowed_engines": [
+        "fish_s2"
+      ],
+      "generation_parameters": {
+        "temperature": 0.88,
+        "top_p": 0.9,
+        "top_k": 30
+      },
+      "design_instruction": "Fictional child-boy character voice, clever, energetic and clear. Naturally youthful with controlled excitement, without shouting or imitation of a real child.",
+      "provenance": {
+        "reference_generator": "Qwen3-TTS VoiceDesign",
+        "real_person": false
+      },
+      "preview_metrics": {
+        "duration_seconds": 11.935,
+        "sample_rate": 44100.0,
+        "rms": 0.093351,
+        "peak": 0.786621,
+        "clipping_ratio": 0.0,
+        "silence_ratio": 0.266317,
+        "technical_score": 10.0
+      },
+      "asr_validation": {
+        "transcript": "No one expected the quiet stranger to know the family secret. By morning, every promise had changed and the truth could no longer stay hidden. What happened next forced every person in the house to choose a side.",
+        "similarity": 1.0,
+        "language_probability": 1,
+        "passed": true
+      }
+    },
+    {
+      "voice_id": "ar_playful_young_female",
+      "display_name": "阿语·俏皮灵动年轻女声",
+      "gender": "female",
+      "languages": [
+        "Arabic"
+      ],
+      "style": [
+        "playful",
+        "bright",
+        "youthful"
+      ],
+      "age_group": "young_adult",
+      "role_archetype": "playful_heroine",
+      "source_kind": "synthetic_voice_design",
+      "review_status": "approved",
+      "quality_score": 10.0,
+      "reference_audio": "ar_playful_young_female/reference.wav",
+      "reference_text": "A single choice can change an entire family. Tonight the truth comes out, old promises are tested, and no one can avoid the decision waiting at the end.",
+      "reference_language": "English",
+      "preview_audio": "ar_playful_young_female/preview.wav",
+      "preview_text": "لم يتوقع أحد أن يعرف الغريب الهادئ سر العائلة. ومع حلول الصباح، تغيرت كل الوعود، ولم يعد من الممكن إخفاء الحقيقة.",
+      "default_speed": 1.04,
+      "target_loudness_mode": "match_source_program",
+      "engine": "reference_voice",
+      "model_version": "Fish Speech S2 Pro NF4",
+      "allowed_engines": [
+        "fish_s2"
+      ],
+      "generation_parameters": {
+        "temperature": 0.88,
+        "top_p": 0.9,
+        "top_k": 30
+      },
+      "design_instruction": "Young adult female narrator, playful, nimble and charming, with a bright natural smile in the voice. Contemporary and expressive, never shrill or childish.",
+      "provenance": {
+        "reference_generator": "Qwen3-TTS VoiceDesign",
+        "real_person": false
+      },
+      "preview_metrics": {
+        "duration_seconds": 9.845,
+        "sample_rate": 44100.0,
+        "rms": 0.078385,
+        "peak": 0.712891,
+        "clipping_ratio": 0.0,
+        "silence_ratio": 0.273329,
+        "technical_score": 10.0
+      },
+      "asr_validation": {
+        "transcript": "لم يتوقع أحد أن يعرف الغريب الهادي سر العائلة ومع حلول الصباح تغيرت كل الوعود ولم يعد من الممكن إخفاء الحقيقة",
+        "similarity": 1.0,
+        "language_probability": 1,
+        "passed": true
+      }
+    },
+    {
+      "voice_id": "ar_elder_female",
+      "display_name": "阿语·温厚年长女声",
+      "gender": "female",
+      "languages": [
+        "Arabic"
+      ],
+      "style": [
+        "mature",
+        "warm",
+        "wise"
+      ],
+      "age_group": "senior",
+      "role_archetype": "wise_matriarch",
+      "source_kind": "synthetic_voice_design",
+      "review_status": "approved",
+      "quality_score": 9.82,
+      "reference_audio": "ar_elder_female/reference.wav",
+      "reference_text": "A single choice can change an entire family. Tonight the truth comes out, old promises are tested, and no one can avoid the decision waiting at the end.",
+      "reference_language": "English",
+      "preview_audio": "ar_elder_female/preview.wav",
+      "preview_text": "لم يتوقع أحد أن يعرف الغريب الهادئ سر العائلة. ومع حلول الصباح، تغيرت كل الوعود، ولم يعد من الممكن إخفاء الحقيقة.",
+      "default_speed": 0.94,
+      "target_loudness_mode": "match_source_program",
+      "engine": "reference_voice",
+      "model_version": "Fish Speech S2 Pro NF4",
+      "allowed_engines": [
+        "fish_s2"
+      ],
+      "generation_parameters": {
+        "temperature": 0.88,
+        "top_p": 0.9,
+        "top_k": 30
+      },
+      "design_instruction": "Senior female narrator, warm, wise and dignified, with a gently weathered lower register. Clear patient storytelling, never frail or theatrical.",
+      "provenance": {
+        "reference_generator": "Qwen3-TTS VoiceDesign",
+        "real_person": false
+      },
+      "preview_metrics": {
+        "duration_seconds": 10.495,
+        "sample_rate": 44100.0,
+        "rms": 0.063892,
+        "peak": 0.541016,
+        "clipping_ratio": 0.0,
+        "silence_ratio": 0.301546,
+        "technical_score": 10.0
+      },
+      "asr_validation": {
+        "transcript": "لم يتوقع أحد أن يعرف الغريب الهادي سر العائلة وما حلول السباح تغيرت كل الوعود ولم يعد من الممكن إخفاء الحقيقة",
+        "similarity": 0.982,
+        "language_probability": 1,
+        "passed": true
+      }
+    },
+    {
+      "voice_id": "ar_roguish_young_male",
+      "display_name": "阿语·轻快不羁年轻男声",
+      "gender": "male",
+      "languages": [
+        "Arabic"
+      ],
+      "style": [
+        "roguish",
+        "quick",
+        "confident"
+      ],
+      "age_group": "young_adult",
+      "role_archetype": "roguish_hero",
+      "source_kind": "synthetic_voice_design",
+      "review_status": "approved",
+      "quality_score": 9.91,
+      "reference_audio": "ar_roguish_young_male/reference.wav",
+      "reference_text": "A single choice can change an entire family. Tonight the truth comes out, old promises are tested, and no one can avoid the decision waiting at the end.",
+      "reference_language": "English",
+      "preview_audio": "ar_roguish_young_male/preview.wav",
+      "preview_text": "لم يتوقع أحد أن يعرف الغريب الهادئ سر العائلة. ومع حلول الصباح، تغيرت كل الوعود، ولم يعد من الممكن إخفاء الحقيقة.",
+      "default_speed": 1.04,
+      "target_loudness_mode": "match_source_program",
+      "engine": "reference_voice",
+      "model_version": "Fish Speech S2 Pro NF4",
+      "allowed_engines": [
+        "fish_s2"
+      ],
+      "generation_parameters": {
+        "temperature": 0.88,
+        "top_p": 0.9,
+        "top_k": 30
+      },
+      "design_instruction": "Young adult male narrator, quick-witted, lightly roguish and confident. Agile conversational rhythm with a subtle smile, natural rather than announcer-like.",
+      "provenance": {
+        "reference_generator": "Qwen3-TTS VoiceDesign",
+        "real_person": false
+      },
+      "preview_metrics": {
+        "duration_seconds": 9.706,
+        "sample_rate": 44100.0,
+        "rms": 0.086776,
+        "peak": 0.662598,
+        "clipping_ratio": 0.0,
+        "silence_ratio": 0.180176,
+        "technical_score": 10.0
+      },
+      "asr_validation": {
+        "transcript": "لم يتوقع أحد أن يعرف الغريب الهادئ سر العائلة وما حلول الصباح تغيرت كل الوعود ولم يعد من الممكن إخفاء الحقيقة",
+        "similarity": 0.991,
+        "language_probability": 1,
+        "passed": true
+      }
+    },
+    {
+      "voice_id": "ar_elder_male",
+      "display_name": "阿语·沉稳年长男声",
+      "gender": "male",
+      "languages": [
+        "Arabic"
+      ],
+      "style": [
+        "mature",
+        "steady",
+        "wise"
+      ],
+      "age_group": "senior",
+      "role_archetype": "wise_patriarch",
+      "source_kind": "synthetic_voice_design",
+      "review_status": "approved",
+      "quality_score": 9.91,
+      "reference_audio": "ar_elder_male/reference.wav",
+      "reference_text": "A single choice can change an entire family. Tonight the truth comes out, old promises are tested, and no one can avoid the decision waiting at the end.",
+      "reference_language": "English",
+      "preview_audio": "ar_elder_male/preview.wav",
+      "preview_text": "لم يتوقع أحد أن يعرف الغريب الهادئ سر العائلة. ومع حلول الصباح، تغيرت كل الوعود، ولم يعد من الممكن إخفاء الحقيقة.",
+      "default_speed": 0.94,
+      "target_loudness_mode": "match_source_program",
+      "engine": "reference_voice",
+      "model_version": "Fish Speech S2 Pro NF4",
+      "allowed_engines": [
+        "fish_s2"
+      ],
+      "generation_parameters": {
+        "temperature": 0.88,
+        "top_p": 0.9,
+        "top_k": 30
+      },
+      "design_instruction": "Senior male narrator with a warm seasoned baritone, calm authority and deliberate pacing. Wise and reassuring, not booming or overly cinematic.",
+      "provenance": {
+        "reference_generator": "Qwen3-TTS VoiceDesign",
+        "real_person": false
+      },
+      "preview_metrics": {
+        "duration_seconds": 9.009,
+        "sample_rate": 44100.0,
+        "rms": 0.0483,
+        "peak": 0.418945,
+        "clipping_ratio": 0.0,
+        "silence_ratio": 0.250388,
+        "technical_score": 10.0
+      },
+      "asr_validation": {
+        "transcript": "لم يتوقع أحد أن يعرف الغريب الهادي سر العائلة وما حلول الصباح تغيرت كل الوعود ولم يعد من الممكن إخفاء الحقيقة",
+        "similarity": 0.991,
+        "language_probability": 1,
+        "passed": true
+      }
+    },
+    {
+      "voice_id": "ar_child_girl",
+      "display_name": "阿语·活泼女孩角色声",
+      "gender": "female",
+      "languages": [
+        "Arabic"
+      ],
+      "style": [
+        "child",
+        "bright",
+        "curious"
+      ],
+      "age_group": "child_role",
+      "role_archetype": "child_girl",
+      "source_kind": "synthetic_voice_design",
+      "review_status": "approved",
+      "quality_score": 9.64,
+      "reference_audio": "ar_child_girl/reference.wav",
+      "reference_text": "A single choice can change an entire family. Tonight the truth comes out, old promises are tested, and no one can avoid the decision waiting at the end.",
+      "reference_language": "English",
+      "preview_audio": "ar_child_girl/preview.wav",
+      "preview_text": "لم يتوقع أحد أن يعرف الغريب الهادئ سر العائلة. ومع حلول الصباح، تغيرت كل الوعود، ولم يعد من الممكن إخفاء الحقيقة.",
+      "default_speed": 1.04,
+      "target_loudness_mode": "match_source_program",
+      "engine": "reference_voice",
+      "model_version": "Fish Speech S2 Pro NF4",
+      "allowed_engines": [
+        "fish_s2"
+      ],
+      "generation_parameters": {
+        "temperature": 0.88,
+        "top_p": 0.9,
+        "top_k": 30
+      },
+      "design_instruction": "Fictional child-girl character voice, bright, curious and clearly articulated. Youthful and lively but comfortable to hear, without squealing or imitation of a real child.",
+      "provenance": {
+        "reference_generator": "Qwen3-TTS VoiceDesign",
+        "real_person": false
+      },
+      "preview_metrics": {
+        "duration_seconds": 10.635,
+        "sample_rate": 44100.0,
+        "rms": 0.050905,
+        "peak": 0.513672,
+        "clipping_ratio": 0.0,
+        "silence_ratio": 0.268783,
+        "technical_score": 10.0
+      },
+      "asr_validation": {
+        "transcript": "لم يتوقع أحداً أن يعرف الغريبة العادئ سر العائلة ومع حلول الصباح تغيرت كل الوعود ولم يهد من الممكن اغفاء الحقيقة",
+        "similarity": 0.964,
+        "language_probability": 1,
+        "passed": true
+      }
+    },
+    {
+      "voice_id": "ar_child_boy",
+      "display_name": "阿语·机灵男孩角色声",
+      "gender": "male",
+      "languages": [
+        "Arabic"
+      ],
+      "style": [
+        "child",
+        "clever",
+        "energetic"
+      ],
+      "age_group": "child_role",
+      "role_archetype": "child_boy",
+      "source_kind": "synthetic_voice_design",
+      "review_status": "approved",
+      "quality_score": 9.72,
+      "reference_audio": "ar_child_boy/reference.wav",
+      "reference_text": "A single choice can change an entire family. Tonight the truth comes out, old promises are tested, and no one can avoid the decision waiting at the end.",
+      "reference_language": "English",
+      "preview_audio": "ar_child_boy/preview.wav",
+      "preview_text": "لم يتوقع أحد أن يعرف الغريب الهادئ سر العائلة. ومع حلول الصباح، تغيرت كل الوعود، ولم يعد من الممكن إخفاء الحقيقة.",
+      "default_speed": 1.04,
+      "target_loudness_mode": "match_source_program",
+      "engine": "reference_voice",
+      "model_version": "Fish Speech S2 Pro NF4",
+      "allowed_engines": [
+        "fish_s2"
+      ],
+      "generation_parameters": {
+        "temperature": 0.88,
+        "top_p": 0.9,
+        "top_k": 30
+      },
+      "design_instruction": "Fictional child-boy character voice, clever, energetic and clear. Naturally youthful with controlled excitement, without shouting or imitation of a real child.",
+      "provenance": {
+        "reference_generator": "Qwen3-TTS VoiceDesign",
+        "real_person": false
+      },
+      "preview_metrics": {
+        "duration_seconds": 8.916,
+        "sample_rate": 44100.0,
+        "rms": 0.121959,
+        "peak": 0.799805,
+        "clipping_ratio": 0.0,
+        "silence_ratio": 0.224536,
+        "technical_score": 10.0
+      },
+      "asr_validation": {
+        "transcript": "لم يتوقى أحد أن يعرف الغريب الهادد سر العائلة وما حلول الصباح تغيرت كل الوعود ولم يعد من الممكن إخفاء الحقيقة",
+        "similarity": 0.972,
+        "language_probability": 1,
+        "passed": true
+      }
+    }
+  ]
+}

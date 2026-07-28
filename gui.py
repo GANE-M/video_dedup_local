@@ -19,6 +19,17 @@ from pathlib import Path
 from tkinter import colorchooser, filedialog, messagebox, ttk
 
 import video_dedup
+import agent_bridge
+from recap_gui import RecapWorkspace
+
+
+PRESET_LABELS = {
+    "light": "初级",
+    "medium": "中级",
+    "strong": "高级",
+    "deep": "深度",
+}
+PRESET_KEYS_BY_LABEL = {label: key for key, label in PRESET_LABELS.items()}
 
 
 @dataclass
@@ -71,15 +82,33 @@ class VideoToolApp(tk.Tk):
         self._build_ui()
         self.load_preset()
         self.load_last_state()
+        self.ensure_bundled_effect_defaults()
+        self.refresh_translation_mode_panel()
         self.enable_auto_state_save()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def ensure_bundled_effect_defaults(self) -> None:
+        """Use the bundled black-background effect pack when no asset was selected."""
+        if self.effect_file.get().strip() or self.effect_dir.get().strip():
+            return
+        bundled_effects = Path(__file__).resolve().parent / "effects"
+        if not bundled_effects.is_dir():
+            return
+        self.effect_dir.set(str(bundled_effects))
+        # Every bundled clip uses a black background.  Alpha mode would keep
+        # the black canvas and make the effect look as if it did not work.
+        self.effect_key_mode.set("黑色背景")
+        # The previous 0.12 default was nearly invisible on ordinary footage.
+        self.effect_opacity.set(0.30)
 
     def _make_variables(self) -> None:
         self.input_path = tk.StringVar()
         self.output_path = tk.StringVar()
         self.preset = tk.StringVar(value="medium")
+        self.preset_display = tk.StringVar(value=PRESET_LABELS["medium"])
         self.seed = tk.StringVar(value="2026")
         self.crop = tk.DoubleVar()
+        self.zoom = tk.DoubleVar()
         self.mirror = tk.BooleanVar()
         self.speed = tk.DoubleVar()
         self.brightness = tk.DoubleVar()
@@ -94,10 +123,29 @@ class VideoToolApp(tk.Tk):
         self.music_dir = tk.StringVar()
         self.music_volume = tk.DoubleVar()
         self.keep_audio = tk.BooleanVar(value=True)
-        self.crf = tk.IntVar(value=15)
+        self.crf = tk.IntVar(value=23)
         self.encoder_preset = tk.StringVar(value="medium")
         self.hardware_acceleration = tk.StringVar(value="nvidia")
+        self.blur_background = tk.BooleanVar(value=False)
+        self.blur_sigma = tk.DoubleVar(value=18.0)
+        self.foreground_scale = tk.DoubleVar(value=0.96)
+        self.output_aspect = tk.StringVar(value="保持原画幅")
+        self.target_fps = tk.StringVar(value="保持源帧率")
+        self.border_file = tk.StringVar()
+        self.enable_dynamic_effects = tk.BooleanVar(value=False)
+        self.effect_file = tk.StringVar()
+        self.effect_dir = tk.StringVar()
+        self.effect_random_type = tk.BooleanVar(value=True)
+        self.effect_timing = tk.StringVar(value="随机时间出现")
+        self.effect_frequency = tk.DoubleVar(value=3.0)
+        self.effect_duration = tk.DoubleVar(value=2.5)
+        self.effect_opacity = tk.DoubleVar(value=0.30)
+        self.effect_key_mode = tk.StringVar(value="黑色背景")
+        self.effect_position = tk.StringVar(value="全屏")
+        self.enable_dedup_stage = tk.BooleanVar(value=True)
         self.enable_subtitle_pipeline = tk.BooleanVar(value=True)
+        self.enable_recap_stage = tk.BooleanVar(value=False)
+        self.reuse_final_subtitle_cache = tk.BooleanVar(value=True)
         self.subtitle_source = tk.StringVar(value="自动：软字幕优先，否则硬字幕OCR+音频ASR")
         self.subtitle_mode = tk.StringVar(value="烧录到画面")
         self.subtitle_layout = tk.StringVar(value="覆盖原字幕")
@@ -109,16 +157,22 @@ class VideoToolApp(tk.Tk):
         self.subtitle_cover_width = tk.DoubleVar(value=100.0)
         self.subtitle_cover_height = tk.DoubleVar(value=11.0)
         self.subtitle_cover_opacity = tk.DoubleVar(value=0.82)
+        self.subtitle_cover_mode = tk.StringVar(value="局部高斯模糊")
+        self.subtitle_cover_blur_sigma = tk.DoubleVar(value=22.0)
         self.subtitle_font_name = tk.StringVar(value="Arial")
         self.subtitle_font_size = tk.IntVar(value=28)
         self.subtitle_ocr_language = tk.StringVar(value="自动")
-        self.subtitle_ocr_device = tk.StringVar(value="自动")
+        self.subtitle_ocr_device = tk.StringVar(value="cuda")
         self.subtitle_source_language = tk.StringVar(value="自动")
         self.subtitle_target_language = tk.StringVar(value="English")
         self.subtitle_glossary = tk.StringVar(value="不使用术语表")
         self.subtitle_file = tk.StringVar()
         self.subtitle_output = tk.StringVar()
         self.subtitle_provider = tk.StringVar(value="openai-compatible")
+        self.translation_backend = tk.StringVar(value="API 模式")
+        self.translation_quality = tk.StringVar(value="快速翻译")
+        self.localization_strategy = tk.StringVar(value="标准影视本地化")
+        self.agent_bridge_status = tk.StringVar(value="Agent 未初始化")
         self.llm_api_key = tk.StringVar(value=os.environ.get("OPENAI_API_KEY", ""))
         self.llm_base_url = tk.StringVar(value=os.environ.get("OPENAI_BASE_URL", "https://theruta.ai/api/v1/chat/completions"))
         self.llm_model = tk.StringVar(value=os.environ.get("OPENAI_MODEL", "deepseek-v4-flash"))
@@ -147,7 +201,7 @@ class VideoToolApp(tk.Tk):
         root = ttk.Frame(self, padding=16)
         root.pack(fill="both", expand=True)
         ttk.Label(root, text="本地视频处理工具", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(root, text="全部处理在本机完成，不连接易剪媒服务器。请仅处理自己拥有或获准修改的视频。", foreground="#666").pack(anchor="w", pady=(3, 12))
+        ttk.Label(root, text="全部处理在本机完成；请仅处理自己拥有或获准修改的视频。", foreground="#666").pack(anchor="w", pady=(3, 12))
 
         paths = ttk.LabelFrame(root, text="文件", style="Section.TLabelframe", padding=10)
         paths.pack(fill="x")
@@ -160,12 +214,25 @@ class VideoToolApp(tk.Tk):
         ttk.Button(paths, text="选择", command=self.choose_output).grid(row=1, column=2, columnspan=2, sticky="ew")
         paths.columnconfigure(1, weight=1)
 
+        stages = ttk.LabelFrame(root, text="处理阶段（可独立或组合）", style="Section.TLabelframe", padding=8)
+        stages.pack(fill="x", pady=(10, 0))
+        ttk.Checkbutton(stages, text="1. 字幕获取与翻译", variable=self.enable_subtitle_pipeline).pack(side="left", padx=(0, 18))
+        ttk.Checkbutton(stages, text="2. 解说视频编排与剪辑", variable=self.enable_recap_stage).pack(side="left", padx=(0, 18))
+        ttk.Checkbutton(stages, text="3. 二次去重", variable=self.enable_dedup_stage).pack(side="left")
+        ttk.Label(stages, text="组合时固定顺序：字幕 → 解说 → 去重", foreground="#666").pack(side="right")
+
         preset_bar = ttk.Frame(root)
         preset_bar.pack(fill="x", pady=10)
         ttk.Label(preset_bar, text="处理强度").pack(side="left")
-        combo = ttk.Combobox(preset_bar, textvariable=self.preset, values=("light", "medium", "strong"), state="readonly", width=12)
+        combo = ttk.Combobox(
+            preset_bar,
+            textvariable=self.preset_display,
+            values=tuple(PRESET_LABELS.values()),
+            state="readonly",
+            width=12,
+        )
         combo.pack(side="left", padx=(8, 16))
-        combo.bind("<<ComboboxSelected>>", lambda _e: self.load_preset(save_state=True))
+        combo.bind("<<ComboboxSelected>>", self.on_preset_selected)
         ttk.Button(preset_bar, text="载入预设", command=lambda: self.load_preset(save_state=True)).pack(side="left")
         ttk.Label(preset_bar, text="随机种子").pack(side="left", padx=(24, 6))
         ttk.Entry(preset_bar, textvariable=self.seed, width=10).pack(side="left")
@@ -188,23 +255,30 @@ class VideoToolApp(tk.Tk):
         time_tab = ttk.Frame(notebook, padding=12)
         audio_tab = ttk.Frame(notebook, padding=12)
         output_tab = ttk.Frame(notebook, padding=12)
+        effects_container = ttk.Frame(notebook)
+        effects_tab = self._make_scrollable_frame(effects_container)
         subtitle_container = ttk.Frame(notebook)
         subtitle_tab = self._make_scrollable_frame(subtitle_container)
         notebook.add(video_tab, text="画面")
         notebook.add(time_tab, text="时间")
         notebook.add(audio_tab, text="声音")
         notebook.add(output_tab, text="输出质量")
+        notebook.add(effects_container, text="动态特效")
         notebook.add(subtitle_container, text="字幕")
+        recap_tab = ttk.Frame(notebook)
+        notebook.add(recap_tab, text="解说剪辑")
+        self.recap_workspace = RecapWorkspace(recap_tab)
 
         self._scale_row(video_tab, 0, "裁边比例 (%)", self.crop, 0, 15, 0.1)
-        ttk.Checkbutton(video_tab, text="水平镜像", variable=self.mirror).grid(row=1, column=0, columnspan=3, sticky="w", pady=6)
-        self._scale_row(video_tab, 2, "亮度", self.brightness, -0.2, 0.2, 0.005)
-        self._scale_row(video_tab, 3, "对比度", self.contrast, 0.5, 2.0, 0.01)
-        self._scale_row(video_tab, 4, "饱和度", self.saturation, 0, 3.0, 0.01)
-        self._scale_row(video_tab, 5, "色彩叠加透明度", self.color_opacity, 0, 0.3, 0.005)
-        ttk.Label(video_tab, text="叠加颜色").grid(row=6, column=0, sticky="w", pady=6)
-        ttk.Entry(video_tab, textvariable=self.color, width=14).grid(row=6, column=1, sticky="w")
-        ttk.Button(video_tab, text="选择颜色", command=self.choose_color).grid(row=6, column=2, sticky="w")
+        self._scale_row(video_tab, 1, "视频放大 (%)", self.zoom, 0, 50, 1)
+        ttk.Checkbutton(video_tab, text="水平镜像", variable=self.mirror).grid(row=2, column=0, columnspan=3, sticky="w", pady=6)
+        self._scale_row(video_tab, 3, "亮度", self.brightness, -0.2, 0.2, 0.005)
+        self._scale_row(video_tab, 4, "对比度", self.contrast, 0.5, 2.0, 0.01)
+        self._scale_row(video_tab, 5, "饱和度", self.saturation, 0, 3.0, 0.01)
+        self._scale_row(video_tab, 6, "色彩叠加透明度", self.color_opacity, 0, 0.3, 0.005)
+        ttk.Label(video_tab, text="叠加颜色").grid(row=7, column=0, sticky="w", pady=6)
+        ttk.Entry(video_tab, textvariable=self.color, width=14).grid(row=7, column=1, sticky="w")
+        ttk.Button(video_tab, text="选择颜色", command=self.choose_color).grid(row=7, column=2, sticky="w")
         video_tab.columnconfigure(1, weight=1)
 
         self._scale_row(time_tab, 0, "播放速度", self.speed, 0.5, 2.0, 0.005)
@@ -232,7 +306,41 @@ class VideoToolApp(tk.Tk):
         ttk.Label(output_tab, text="Windows 选 nvidia/amd/intel；Mac 选 apple=VideoToolbox；auto 会自动探测。", foreground="#666").grid(row=3, column=0, columnspan=3, sticky="w")
         output_tab.columnconfigure(1, weight=1)
 
-        ttk.Checkbutton(subtitle_tab, text="启用自动字幕流水线：按下方字幕来源组合 → LLM翻译审核 → 写入成片", variable=self.enable_subtitle_pipeline).grid(row=0, column=0, columnspan=3, sticky="w", pady=6)
+        ttk.Label(effects_tab, text="画面增强与动态特效", font=("Microsoft YaHei UI", 10, "bold")).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
+        ttk.Checkbutton(effects_tab, text="模糊背景＋主体画中画", variable=self.blur_background).grid(row=1, column=0, columnspan=3, sticky="w", pady=5)
+        self._scale_row(effects_tab, 2, "背景模糊强度", self.blur_sigma, 0, 40, 1)
+        self._scale_row(effects_tab, 3, "主体画面比例", self.foreground_scale, 0.5, 1.0, 0.01)
+        ttk.Label(effects_tab, text="输出画幅").grid(row=4, column=0, sticky="w", pady=5)
+        ttk.Combobox(effects_tab, textvariable=self.output_aspect, values=("保持原画幅", "竖屏 9:16", "横屏 16:9", "方形 1:1"), state="readonly", width=18).grid(row=4, column=1, sticky="w", padx=8)
+        ttk.Label(effects_tab, text="固定帧率").grid(row=5, column=0, sticky="w", pady=5)
+        ttk.Combobox(effects_tab, textvariable=self.target_fps, values=("保持源帧率", "24", "25", "30", "50", "60"), state="readonly", width=18).grid(row=5, column=1, sticky="w", padx=8)
+        ttk.Label(effects_tab, text="边框素材").grid(row=6, column=0, sticky="w", pady=5)
+        ttk.Entry(effects_tab, textvariable=self.border_file).grid(row=6, column=1, sticky="ew", padx=8)
+        ttk.Button(effects_tab, text="选择", command=self.choose_border_file).grid(row=6, column=2, sticky="w")
+        ttk.Label(effects_tab, text="边框支持透明 PNG/WebM/MOV，也可使用循环视频边框。", foreground="#666").grid(row=7, column=1, columnspan=2, sticky="w", padx=8)
+
+        ttk.Separator(effects_tab, orient="horizontal").grid(row=8, column=0, columnspan=3, sticky="ew", pady=10)
+        ttk.Checkbutton(effects_tab, text="启用随机动态特效", variable=self.enable_dynamic_effects).grid(row=9, column=0, columnspan=3, sticky="w", pady=5)
+        ttk.Checkbutton(effects_tab, text="每次随机选择不同特效", variable=self.effect_random_type).grid(row=10, column=0, columnspan=3, sticky="w", pady=5)
+        ttk.Label(effects_tab, text="固定特效文件").grid(row=11, column=0, sticky="w", pady=5)
+        ttk.Entry(effects_tab, textvariable=self.effect_file).grid(row=11, column=1, sticky="ew", padx=8)
+        ttk.Button(effects_tab, text="选择", command=self.choose_effect_file).grid(row=11, column=2, sticky="w")
+        ttk.Label(effects_tab, text="随机特效目录").grid(row=12, column=0, sticky="w", pady=5)
+        ttk.Entry(effects_tab, textvariable=self.effect_dir).grid(row=12, column=1, sticky="ew", padx=8)
+        ttk.Button(effects_tab, text="选择目录", command=self.choose_effect_dir).grid(row=12, column=2, sticky="w")
+        ttk.Label(effects_tab, text="出现方式").grid(row=13, column=0, sticky="w", pady=5)
+        ttk.Combobox(effects_tab, textvariable=self.effect_timing, values=("随机时间出现", "全程循环"), state="readonly", width=18).grid(row=13, column=1, sticky="w", padx=8)
+        self._scale_row(effects_tab, 14, "每分钟出现次数", self.effect_frequency, 0.5, 12, 0.5)
+        self._scale_row(effects_tab, 15, "单次持续时间（秒）", self.effect_duration, 0.5, 15, 0.5)
+        self._scale_row(effects_tab, 16, "特效透明度", self.effect_opacity, 0.01, 1.0, 0.01)
+        ttk.Label(effects_tab, text="素材背景").grid(row=17, column=0, sticky="w", pady=5)
+        ttk.Combobox(effects_tab, textvariable=self.effect_key_mode, values=("黑色背景", "绿色幕布", "透明通道"), state="readonly", width=18).grid(row=17, column=1, sticky="w", padx=8)
+        ttk.Label(effects_tab, text="显示区域").grid(row=18, column=0, sticky="w", pady=5)
+        ttk.Combobox(effects_tab, textvariable=self.effect_position, values=("全屏", "顶部", "底部"), state="readonly", width=18).grid(row=18, column=1, sticky="w", padx=8)
+        ttk.Label(effects_tab, text="可把烟花、流星雨、飘雪、光斑和扫光素材放在同一目录；随机种子可复现选择和出现时间。", foreground="#666", wraplength=620).grid(row=19, column=0, columnspan=3, sticky="w", pady=(5, 0))
+        effects_tab.columnconfigure(1, weight=1)
+
+        ttk.Label(subtitle_tab, text="字幕阶段设置：识别/读取 → 翻译审核 → 保存字幕终稿；是否编码视频由顶部阶段选择决定。", foreground="#555").grid(row=0, column=0, columnspan=3, sticky="w", pady=6)
         ttk.Label(subtitle_tab, text="字幕来源").grid(row=1, column=0, sticky="w", pady=5)
         ttk.Combobox(
             subtitle_tab,
@@ -305,7 +413,19 @@ class VideoToolApp(tk.Tk):
         self._scale_row(subtitle_tab, 16, "手动字幕区域宽度 (%)", self.subtitle_cover_width, 10, 100, 1)
         self._scale_row(subtitle_tab, 17, "手动字幕区域起点高度 (%)", self.subtitle_cover_y, 50, 95, 1)
         self._scale_row(subtitle_tab, 18, "手动字幕区域高度 (%)", self.subtitle_cover_height, 4, 30, 1)
-        self._scale_row(subtitle_tab, 19, "白色蒙版透明度", self.subtitle_cover_opacity, 0, 1, 0.02)
+        cover_style = ttk.LabelFrame(subtitle_tab, text="字幕遮挡效果", padding=6)
+        cover_style.grid(row=19, column=0, columnspan=3, sticky="ew", pady=5)
+        ttk.Label(cover_style, text="方式").grid(row=0, column=0, sticky="w", pady=4)
+        ttk.Combobox(
+            cover_style,
+            textvariable=self.subtitle_cover_mode,
+            values=("局部高斯模糊", "白色半透明蒙版"),
+            state="readonly",
+            width=20,
+        ).grid(row=0, column=1, sticky="w", padx=8)
+        self._scale_row(cover_style, 1, "局部模糊强度", self.subtitle_cover_blur_sigma, 0.5, 50, 0.5)
+        self._scale_row(cover_style, 2, "白色蒙版透明度（兼容）", self.subtitle_cover_opacity, 0, 1, 0.02)
+        cover_style.columnconfigure(1, weight=1)
         self._scale_row(subtitle_tab, 20, "字幕字号", self.subtitle_font_size, 16, 64, 1)
         ttk.Label(subtitle_tab, text="字幕字体").grid(row=21, column=0, sticky="w", pady=5)
         ttk.Combobox(subtitle_tab, textvariable=self.subtitle_font_name, values=self._subtitle_font_choices(), width=28).grid(row=21, column=1, sticky="w", padx=8)
@@ -328,6 +448,74 @@ class VideoToolApp(tk.Tk):
         ttk.Label(subtitle_tab, text="可选：整集结合上下文审核，全部视频完成后再统一全剧实体。", foreground="#666").grid(row=29, column=1, columnspan=2, sticky="w", padx=8)
         self.llm_review_frame = ttk.Frame(subtitle_tab)
         self._build_llm_review_panel(self.llm_review_frame)
+        self.subtitle_tab = subtitle_tab
+        # Reorder the page without rebuilding the established controls:
+        # languages/glossary (0-4) -> translation mode (5) -> Agent bridge (6)
+        # -> API settings (7-10) -> render settings (13+) -> API review (33+).
+        # Moving the already-created widgets also preserves their bindings and
+        # backward-compatible config behavior.
+        for old_row in range(29, 8, -1):
+            for widget in subtitle_tab.grid_slaves(row=old_row):
+                widget.grid_configure(row=old_row + 4)
+        for old_row in range(8, 4, -1):
+            for widget in subtitle_tab.grid_slaves(row=old_row):
+                widget.grid_configure(row=old_row + 2)
+        self.api_mode_widgets = [
+            widget
+            for row in (7, 8, 9, 10, 33)
+            for widget in subtitle_tab.grid_slaves(row=row)
+        ]
+        translation_mode_frame = ttk.LabelFrame(subtitle_tab, text="翻译执行方式", padding=8)
+        translation_mode_frame.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(10, 4))
+        ttk.Label(translation_mode_frame, text="模式").grid(row=0, column=0, sticky="w")
+        mode_combo = ttk.Combobox(
+            translation_mode_frame,
+            textvariable=self.translation_backend,
+            values=("API 模式", "Agent 模式"),
+            state="readonly",
+            width=16,
+        )
+        mode_combo.grid(row=0, column=1, sticky="w", padx=8)
+        mode_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_translation_mode_panel())
+        ttk.Label(translation_mode_frame, text="翻译质量").grid(row=1, column=0, sticky="w", pady=(7, 0))
+        ttk.Combobox(
+            translation_mode_frame,
+            textvariable=self.translation_quality,
+            values=("快速翻译", "高级翻译"),
+            state="readonly",
+            width=16,
+        ).grid(row=1, column=1, sticky="w", padx=8, pady=(7, 0))
+        ttk.Label(translation_mode_frame, text="本地化策略").grid(row=2, column=0, sticky="w", pady=(7, 0))
+        ttk.Combobox(
+            translation_mode_frame,
+            textvariable=self.localization_strategy,
+            values=("标准影视本地化", "自然口语", "忠实正式", "海湾中性口语（阿拉伯语）"),
+            state="readonly",
+            width=24,
+        ).grid(row=2, column=1, sticky="w", padx=8, pady=(7, 0))
+        ttk.Label(
+            translation_mode_frame,
+            text="高级翻译由 Agent 模式执行母语化精修与独立全剧终审；海湾口语仅建议用于阿拉伯语。",
+            foreground="#666",
+            wraplength=580,
+        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        ttk.Checkbutton(
+            translation_mode_frame,
+            text="快速翻译优先复用“字幕终稿”（高级翻译会作为只读初稿重新精修）",
+            variable=self.reuse_final_subtitle_cache,
+        ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
+        self.agent_mode_frame = ttk.LabelFrame(subtitle_tab, text="Agent 文件桥接", padding=8)
+        ttk.Button(self.agent_mode_frame, text="生成 Agent 初始化命令", command=self.generate_agent_initialization).grid(row=0, column=0, sticky="w")
+        ttk.Button(self.agent_mode_frame, text="测试通信", command=self.test_agent_communication).grid(row=0, column=1, sticky="w", padx=8)
+        ttk.Button(self.agent_mode_frame, text="停止 Agent 监听", command=self.stop_agent_listener).grid(row=0, column=2, sticky="w")
+        ttk.Label(self.agent_mode_frame, textvariable=self.agent_bridge_status, foreground="#555").grid(row=1, column=0, columnspan=3, sticky="w", pady=(7, 0))
+        ttk.Label(
+            self.agent_mode_frame,
+            text="空闲时单次监听20分钟、约每分钟检查；领取任务后必须持续到提交。每集保存检查点，意外结束后同一注册可恢复未提交任务。",
+            foreground="#666",
+            wraplength=650,
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(5, 0))
         subtitle_tab.columnconfigure(1, weight=1)
 
         log_frame = ttk.LabelFrame(root, text="运行日志", padding=6)
@@ -439,7 +627,7 @@ class VideoToolApp(tk.Tk):
         self.subtitle_preview_canvas = canvas
         ttk.Label(parent, text="拖动方框内部可移动；拖动四角可调整范围。没有字幕的随机帧，点“随机换一帧”。", foreground="#666").grid(row=4, column=0, sticky="w")
         parent.columnconfigure(0, weight=1)
-        for variable in (self.subtitle_cover_x, self.subtitle_cover_y, self.subtitle_cover_width, self.subtitle_cover_height, self.subtitle_cover_opacity, self.subtitle_font_name, self.subtitle_font_size, self.subtitle_position, self.subtitle_layout, self.subtitle_preview_text):
+        for variable in (self.subtitle_cover_x, self.subtitle_cover_y, self.subtitle_cover_width, self.subtitle_cover_height, self.subtitle_cover_opacity, self.subtitle_cover_mode, self.subtitle_cover_blur_sigma, self.subtitle_font_name, self.subtitle_font_size, self.subtitle_position, self.subtitle_layout, self.subtitle_preview_text):
             variable.trace_add("write", lambda *_args: self.redraw_subtitle_preview_box())
 
     def _build_llm_review_panel(self, parent: ttk.Frame) -> None:
@@ -460,8 +648,81 @@ class VideoToolApp(tk.Tk):
             self.llm_review_frame.grid_remove()
             self.llm_review_expanded.set(False)
         else:
-            self.llm_review_frame.grid(row=30, column=0, columnspan=3, sticky="ew", pady=(0, 10))
+            self.llm_review_frame.grid(row=34, column=0, columnspan=3, sticky="ew", pady=(0, 10))
             self.llm_review_expanded.set(True)
+
+    def agent_bridge_root(self) -> Path:
+        return Path(__file__).resolve().with_name("agent-bridge")
+
+    def refresh_translation_mode_panel(self) -> None:
+        if not hasattr(self, "subtitle_tab") or not hasattr(self, "agent_mode_frame"):
+            return
+        agent_mode = self.translation_backend.get() == "Agent 模式"
+        # Existing API inputs occupy these rows. Keeping their original grid
+        # positions preserves old layouts/configs while the mode selector acts
+        # as their containing fold.
+        for widget in self.api_mode_widgets:
+            if agent_mode:
+                widget.grid_remove()
+            else:
+                widget.grid()
+        if agent_mode:
+            if self.llm_review_frame:
+                self.llm_review_frame.grid_remove()
+            self.agent_mode_frame.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(0, 10))
+            status = agent_bridge.bridge_status(self.agent_bridge_root())
+            if status.get("connected"):
+                self.agent_bridge_status.set("Agent 已连接，最近心跳正常")
+            elif status.get("state", {}).get("agent_enabled"):
+                self.agent_bridge_status.set("已生成初始化文件，等待 Agent 对话注册或恢复监听")
+            else:
+                self.agent_bridge_status.set("Agent 未初始化")
+        else:
+            self.agent_mode_frame.grid_remove()
+            if self.llm_review_expanded.get() and self.llm_review_frame:
+                self.llm_review_frame.grid(row=34, column=0, columnspan=3, sticky="ew", pady=(0, 10))
+
+    def generate_agent_initialization(self) -> None:
+        try:
+            result = agent_bridge.generate_initialization(
+                self.agent_bridge_root(),
+                Path(__file__).resolve().parent,
+                python_executable=sys.executable,
+                max_parallel=self._parallel_limit(),
+            )
+            self.clipboard_clear()
+            self.clipboard_append(result["command"])
+            self.update_idletasks()
+            self.agent_bridge_status.set(f"初始化命令已复制；注册文件：{result['init_path']}")
+            self.append_log(f"Agent 初始化命令已复制到剪贴板。\n规则：{result['rules_path']}\n注册：{result['init_path']}\n")
+            messagebox.showinfo("Agent 初始化", "初始化命令已复制到剪贴板。\n请粘贴到你希望作为翻译 Agent 的 Codex 对话中。")
+        except Exception as exc:
+            messagebox.showerror("Agent 初始化失败", str(exc))
+
+    def test_agent_communication(self) -> None:
+        try:
+            status = agent_bridge.bridge_status(self.agent_bridge_root())
+            if status.get("connected"):
+                age = status.get("heartbeat_age_seconds")
+                self.agent_bridge_status.set(f"通信正常；心跳约 {age:.0f} 秒前")
+                messagebox.showinfo("Agent 通信", "文件协议、注册代次和 Agent 心跳均正常。")
+            elif status.get("state", {}).get("agent_enabled"):
+                self.agent_bridge_status.set("协议目录正常，但没有新鲜的 Agent 心跳")
+                messagebox.showwarning("Agent 通信", "初始化文件存在，但 Agent 对话尚未注册，或已经停止轮询。\n请在对应 Codex 对话运行初始化命令并保持监听。")
+            else:
+                self.agent_bridge_status.set("Agent 未初始化")
+                messagebox.showwarning("Agent 通信", "请先生成初始化命令，并粘贴到一个 Codex 对话。")
+        except Exception as exc:
+            messagebox.showerror("Agent 通信测试失败", str(exc))
+
+    def stop_agent_listener(self) -> None:
+        if not messagebox.askyesno("停止 Agent 监听", "这会使当前翻译 Agent 对话的注册失效。确定继续吗？"):
+            return
+        try:
+            agent_bridge.stop_agent(self.agent_bridge_root())
+            self.agent_bridge_status.set("Agent 监听已停止；再次使用需重新初始化")
+        except Exception as exc:
+            messagebox.showerror("停止 Agent 失败", str(exc))
 
     def toggle_subtitle_preview(self) -> None:
         if not self.subtitle_preview_frame:
@@ -470,7 +731,7 @@ class VideoToolApp(tk.Tk):
             self.subtitle_preview_frame.grid_remove()
             self.subtitle_preview_expanded.set(False)
         else:
-            self.subtitle_preview_frame.grid(row=23, column=0, columnspan=3, sticky="ew", pady=(0, 10))
+            self.subtitle_preview_frame.grid(row=27, column=0, columnspan=3, sticky="ew", pady=(0, 10))
             self.subtitle_preview_expanded.set(True)
             if not self.subtitle_preview_photo:
                 self.use_current_video_for_preview()
@@ -609,33 +870,46 @@ class VideoToolApp(tk.Tk):
 
     def _preview_image_with_mask(self, x1: float, y1: float, x2: float, y2: float) -> tk.PhotoImage:
         opacity = max(0.0, min(1.0, float(self.subtitle_cover_opacity.get())))
+        blur_sigma = max(0.5, min(100.0, float(self.subtitle_cover_blur_sigma.get())))
+        cover_mode = self._subtitle_cover_mode_value()
         self.subtitle_preview_mask_stipple = None
         # In bilingual mode the rectangle constrains text placement only. The
-        # white mask is rendered exclusively when replacing the old subtitle.
+        # cover effect is rendered exclusively when replacing the old subtitle.
         show_mask = self._subtitle_layout_value() == "replace" and self.subtitle_cover.get()
-        if not self.subtitle_preview_temp or opacity <= 0 or not show_mask:
+        if not self.subtitle_preview_temp or not show_mask or (cover_mode == "color" and opacity <= 0):
             return self.subtitle_preview_photo
         try:
-            from PIL import Image, ImageTk
+            from PIL import Image, ImageFilter, ImageTk
 
             base = Image.open(self.subtitle_preview_temp).convert("RGBA")
-            overlay = Image.new("RGBA", base.size, (255, 255, 255, 0))
             box = (
                 int(round(x1)),
                 int(round(y1)),
                 int(round(x2)),
                 int(round(y2)),
             )
-            mask_alpha = int(round(opacity * 255))
-            overlay.paste((255, 255, 255, mask_alpha), box)
-            composite = Image.alpha_composite(base, overlay)
+            if cover_mode == "blur":
+                region = base.crop(box)
+                # Convert the full-resolution FFmpeg sigma into the preview's
+                # smaller coordinate system so the GUI resembles final output.
+                preview_scale = max(0.1, base.width / 1080.0)
+                region = region.filter(ImageFilter.GaussianBlur(radius=blur_sigma * preview_scale))
+                composite = base.copy()
+                composite.paste(region, box)
+            else:
+                overlay = Image.new("RGBA", base.size, (255, 255, 255, 0))
+                mask_alpha = int(round(opacity * 255))
+                overlay.paste((255, 255, 255, mask_alpha), box)
+                composite = Image.alpha_composite(base, overlay)
             self.subtitle_preview_composite_photo = ImageTk.PhotoImage(composite)
             return self.subtitle_preview_composite_photo
         except Exception:
-            # Pillow is optional for the bare GUI. Fall back to Tk's stipple
-            # patterns so the slider still visibly changes the preview.
+            # Pillow is optional for the bare GUI. A color mask can still use
+            # Tk stipple; blur falls back to the outlined region only.
             if not self.subtitle_preview_photo:
                 raise
+            if cover_mode == "blur":
+                return self.subtitle_preview_photo
             stipple = ""
             if opacity < 0.2:
                 stipple = "gray12"
@@ -796,6 +1070,33 @@ class VideoToolApp(tk.Tk):
         if path:
             self.music_dir.set(path)
 
+    def choose_effect_file(self) -> None:
+        path = filedialog.askopenfilename(
+            title="选择动态特效素材",
+            filetypes=[
+                ("特效素材", "*.mp4 *.mov *.mkv *.avi *.webm *.m4v *.png *.jpg *.jpeg *.webp"),
+                ("所有文件", "*.*"),
+            ],
+        )
+        if path:
+            self.effect_file.set(path)
+
+    def choose_effect_dir(self) -> None:
+        path = filedialog.askdirectory(title="选择随机动态特效目录")
+        if path:
+            self.effect_dir.set(path)
+
+    def choose_border_file(self) -> None:
+        path = filedialog.askopenfilename(
+            title="选择边框素材",
+            filetypes=[
+                ("边框素材", "*.png *.webp *.mp4 *.mov *.webm *.mkv"),
+                ("所有文件", "*.*"),
+            ],
+        )
+        if path:
+            self.border_file.set(path)
+
     def choose_color(self) -> None:
         chosen = colorchooser.askcolor(self.color.get(), title="选择叠加颜色")[1]
         if chosen:
@@ -917,6 +1218,11 @@ class VideoToolApp(tk.Tk):
     def _subtitle_layout_value(self) -> str:
         return {"覆盖原字幕": "replace", "双语字幕": "bilingual"}.get(self.subtitle_layout.get(), "replace")
 
+    def _subtitle_cover_mode_value(self) -> str:
+        return {"局部高斯模糊": "blur", "白色半透明蒙版": "color"}.get(
+            self.subtitle_cover_mode.get(), "blur"
+        )
+
     def _subtitle_position_value(self) -> str:
         return {
             "自动": "auto",
@@ -995,6 +1301,25 @@ class VideoToolApp(tk.Tk):
         container_input = self._docker_path(input_arg, input_mount, "/input") if not input_list_file else "/input"
         container_output = "/output/" + output.name if output_is_file else "/output"
         container_config = self._docker_path(config_file, temp_mount, "/tmpcfg")
+        config_values = json.loads(config_file.read_text(encoding="utf-8-sig"))
+        asset_mounts: list[tuple[Path, str]] = []
+        for key in ("background_music", "effect_file", "border_file"):
+            raw = config_values.get(key)
+            if not raw:
+                continue
+            host_file = Path(raw).expanduser().resolve()
+            container_dir = f"/assets/{key}"
+            asset_mounts.append((host_file.parent, container_dir))
+            config_values[key] = f"{container_dir}/{host_file.name}"
+        for key in ("background_music_dir", "effect_dir"):
+            raw = config_values.get(key)
+            if not raw:
+                continue
+            host_dir = Path(raw).expanduser().resolve()
+            container_dir = f"/assets/{key}"
+            asset_mounts.append((host_dir, container_dir))
+            config_values[key] = container_dir
+        config_file.write_text(json.dumps(config_values, ensure_ascii=False), encoding="utf-8")
         container_list = None
         if input_list_file:
             input_list_file.write_text(json.dumps([self._docker_path(item, input_mount, "/input") for item in inputs], ensure_ascii=False), encoding="utf-8")
@@ -1011,6 +1336,8 @@ class VideoToolApp(tk.Tk):
         ]
         if docker_hardware == "nvidia":
             command += ["--gpus", "all"]
+        for host_path, container_path in asset_mounts:
+            command += ["-v", f"{host_path}:{container_path}:ro"]
         command += [
             "-v",
             f"{input_mount}:/input",
@@ -1220,6 +1547,10 @@ class VideoToolApp(tk.Tk):
                 str(self.subtitle_cover_opacity.get()),
                 "--cover-color",
                 "white",
+                "--cover-mode",
+                self._subtitle_cover_mode_value(),
+                "--cover-blur-sigma",
+                str(self.subtitle_cover_blur_sigma.get()),
                 "--cover-ocr-language",
                 self._ocr_language_value(),
             ]
@@ -1228,9 +1559,21 @@ class VideoToolApp(tk.Tk):
         self._start_external_command(command, "处理字幕视频中…")
 
     def config_dict(self) -> dict:
+        output_aspect = {
+            "保持原画幅": "source",
+            "竖屏 9:16": "portrait",
+            "横屏 16:9": "landscape",
+            "方形 1:1": "square",
+        }.get(self.output_aspect.get(), "source")
+        target_fps = 0.0 if self.target_fps.get() == "保持源帧率" else float(self.target_fps.get())
+        effect_timing = {"随机时间出现": "random", "全程循环": "continuous"}.get(self.effect_timing.get(), "random")
+        effect_key_mode = {"黑色背景": "black", "绿色幕布": "green", "透明通道": "alpha"}.get(self.effect_key_mode.get(), "black")
+        effect_position = {"全屏": "full", "顶部": "top", "底部": "bottom"}.get(self.effect_position.get(), "full")
         return {
-            "state_version": 3,
-            "crop_percent": self.crop.get(), "mirror": self.mirror.get(), "speed": self.speed.get(),
+            "state_version": 8,
+            "transform_preset": self.preset.get(),
+            "crop_percent": self.crop.get(), "zoom_percent": self.zoom.get(),
+            "mirror": self.mirror.get(), "speed": self.speed.get(),
             "brightness": self.brightness.get(), "contrast": self.contrast.get(), "saturation": self.saturation.get(),
             "color": self.color.get() or None, "color_opacity": self.color_opacity.get(), "fade_seconds": self.fade.get(),
             "trim_start": self.trim_start.get(), "trim_end": self.trim_end.get(), "background_music": self.music.get() or None,
@@ -1238,7 +1581,27 @@ class VideoToolApp(tk.Tk):
             "music_volume": self.music_volume.get(), "keep_audio": self.keep_audio.get(), "crf": self.crf.get(),
             "preset": self.encoder_preset.get(), "audio_bitrate": "192k",
             "hardware_acceleration": self.hardware_acceleration.get(),
+            "blur_background": self.blur_background.get(),
+            "blur_sigma": self.blur_sigma.get(),
+            "foreground_scale": self.foreground_scale.get(),
+            "output_aspect": output_aspect,
+            "target_fps": target_fps,
+            "border_file": self.border_file.get().strip() or None,
+            "enable_dynamic_effects": self.enable_dynamic_effects.get(),
+            "effect_file": self.effect_file.get().strip() or None,
+            "effect_dir": self.effect_dir.get().strip() or None,
+            "effect_random_type": self.effect_random_type.get(),
+            "effect_timing": effect_timing,
+            "effect_frequency": self.effect_frequency.get(),
+            "effect_duration": self.effect_duration.get(),
+            "effect_opacity": self.effect_opacity.get(),
+            "effect_key_mode": effect_key_mode,
+            "effect_position": effect_position,
+            "random_seed": None,
+            "enable_dedup_stage": self.enable_dedup_stage.get(),
             "enable_subtitle_pipeline": self.enable_subtitle_pipeline.get(),
+            "enable_recap_stage": self.enable_recap_stage.get(),
+            "reuse_final_subtitle_cache": self.reuse_final_subtitle_cache.get(),
             "subtitle_source": self.subtitle_source.get(),
             "subtitle_mode": self.subtitle_mode.get(),
             "subtitle_layout": self.subtitle_layout.get(),
@@ -1250,6 +1613,8 @@ class VideoToolApp(tk.Tk):
             "subtitle_cover_width": self.subtitle_cover_width.get(),
             "subtitle_cover_height": self.subtitle_cover_height.get(),
             "subtitle_cover_opacity": self.subtitle_cover_opacity.get(),
+            "subtitle_cover_mode": self.subtitle_cover_mode.get(),
+            "subtitle_cover_blur_sigma": self.subtitle_cover_blur_sigma.get(),
             "subtitle_font_name": self.subtitle_font_name.get().strip() or "Arial",
             "subtitle_font_size": self.subtitle_font_size.get(),
             "subtitle_ocr_language": self.subtitle_ocr_language.get(),
@@ -1257,6 +1622,9 @@ class VideoToolApp(tk.Tk):
             "subtitle_source_language": self.subtitle_source_language.get(),
             "subtitle_target_language": self.subtitle_target_language.get(),
             "subtitle_glossary": self.subtitle_glossary.get(),
+            "translation_backend": self.translation_backend.get(),
+            "translation_quality": self.translation_quality.get(),
+            "localization_strategy": self.localization_strategy.get(),
             "llm_base_url": self.llm_base_url.get().strip(),
             "llm_model": self.llm_model.get().strip(),
             "enable_llm_review": self.enable_llm_review.get(),
@@ -1276,6 +1644,10 @@ class VideoToolApp(tk.Tk):
 
     def apply_config(self, config: dict) -> None:
         config = dict(config)
+        transform_preset = str(config.get("transform_preset", "")).strip()
+        if transform_preset in video_dedup.PRESETS:
+            self.preset.set(transform_preset)
+            self.preset_display.set(PRESET_LABELS.get(transform_preset, transform_preset))
         try:
             state_version = int(config.get("state_version", 0) or 0)
         except (TypeError, ValueError):
@@ -1286,6 +1658,14 @@ class VideoToolApp(tk.Tk):
             if str(config.get("llm_review_model", "")).casefold().startswith("qwen3.6"):
                 config["llm_review_model"] = "deepseek-v4-flash"
             config.setdefault("review_confidence_threshold", 0.82)
+        if state_version < 8:
+            config["crf"] = 23
+            if config.get("hardware_acceleration") == "auto":
+                config["hardware_acceleration"] = "nvidia"
+            if config.get("subtitle_ocr_device") == "自动":
+                config["subtitle_ocr_device"] = "cuda"
+            if config.get("whisper_device") == "auto":
+                config["whisper_device"] = "cuda"
         if config.get("subtitle_source") in {
             "自动：优先软字幕，否则语音识别",
             "自动：软字幕→硬字幕OCR→语音识别",
@@ -1297,15 +1677,52 @@ class VideoToolApp(tk.Tk):
             config["subtitle_source"] = "自动：软字幕优先，否则硬字幕OCR"
         elif config.get("subtitle_source") == "只用语音识别":
             config["subtitle_source"] = "只用音频ASR"
+        config["output_aspect"] = {
+            "source": "保持原画幅",
+            "portrait": "竖屏 9:16",
+            "landscape": "横屏 16:9",
+            "square": "方形 1:1",
+        }.get(config.get("output_aspect"), config.get("output_aspect", "保持原画幅"))
+        fps = config.get("target_fps")
+        config["target_fps"] = "保持源帧率" if not fps else str(int(float(fps)))
+        config["effect_timing"] = {"random": "随机时间出现", "continuous": "全程循环"}.get(
+            config.get("effect_timing"), config.get("effect_timing", "随机时间出现")
+        )
+        config["effect_key_mode"] = {"black": "黑色背景", "green": "绿色幕布", "alpha": "透明通道"}.get(
+            config.get("effect_key_mode"), config.get("effect_key_mode", "黑色背景")
+        )
+        config["effect_position"] = {"full": "全屏", "top": "顶部", "bottom": "底部"}.get(
+            config.get("effect_position"), config.get("effect_position", "全屏")
+        )
         mapping = {
-            "crop_percent": self.crop, "mirror": self.mirror, "speed": self.speed, "brightness": self.brightness,
+            "crop_percent": self.crop, "zoom_percent": self.zoom,
+            "mirror": self.mirror, "speed": self.speed, "brightness": self.brightness,
             "contrast": self.contrast, "saturation": self.saturation, "color": self.color, "color_opacity": self.color_opacity,
             "fade_seconds": self.fade, "trim_start": self.trim_start, "trim_end": self.trim_end,
             "background_music": self.music, "music_volume": self.music_volume, "keep_audio": self.keep_audio,
             "background_music_dir": self.music_dir,
             "crf": self.crf, "preset": self.encoder_preset,
             "hardware_acceleration": self.hardware_acceleration,
+            "blur_background": self.blur_background,
+            "blur_sigma": self.blur_sigma,
+            "foreground_scale": self.foreground_scale,
+            "output_aspect": self.output_aspect,
+            "target_fps": self.target_fps,
+            "border_file": self.border_file,
+            "enable_dynamic_effects": self.enable_dynamic_effects,
+            "effect_file": self.effect_file,
+            "effect_dir": self.effect_dir,
+            "effect_random_type": self.effect_random_type,
+            "effect_timing": self.effect_timing,
+            "effect_frequency": self.effect_frequency,
+            "effect_duration": self.effect_duration,
+            "effect_opacity": self.effect_opacity,
+            "effect_key_mode": self.effect_key_mode,
+            "effect_position": self.effect_position,
+            "enable_dedup_stage": self.enable_dedup_stage,
             "enable_subtitle_pipeline": self.enable_subtitle_pipeline,
+            "enable_recap_stage": self.enable_recap_stage,
+            "reuse_final_subtitle_cache": self.reuse_final_subtitle_cache,
             "subtitle_source": self.subtitle_source,
             "subtitle_mode": self.subtitle_mode,
             "subtitle_layout": self.subtitle_layout,
@@ -1317,6 +1734,8 @@ class VideoToolApp(tk.Tk):
             "subtitle_cover_width": self.subtitle_cover_width,
             "subtitle_cover_height": self.subtitle_cover_height,
             "subtitle_cover_opacity": self.subtitle_cover_opacity,
+            "subtitle_cover_mode": self.subtitle_cover_mode,
+            "subtitle_cover_blur_sigma": self.subtitle_cover_blur_sigma,
             "subtitle_font_name": self.subtitle_font_name,
             "subtitle_font_size": self.subtitle_font_size,
             "subtitle_ocr_language": self.subtitle_ocr_language,
@@ -1324,6 +1743,9 @@ class VideoToolApp(tk.Tk):
             "subtitle_source_language": self.subtitle_source_language,
             "subtitle_target_language": self.subtitle_target_language,
             "subtitle_glossary": self.subtitle_glossary,
+            "translation_backend": self.translation_backend,
+            "translation_quality": self.translation_quality,
+            "localization_strategy": self.localization_strategy,
             "llm_base_url": self.llm_base_url,
             "llm_model": self.llm_model,
             "enable_llm_review": self.enable_llm_review,
@@ -1338,17 +1760,29 @@ class VideoToolApp(tk.Tk):
         for key, variable in mapping.items():
             if key in config:
                 variable.set(config[key] if config[key] is not None else "")
+        self.refresh_translation_mode_panel()
 
     def load_preset(self, save_state: bool = False) -> None:
-        self.apply_config(video_dedup.asdict(video_dedup.PRESETS[self.preset.get()]))
+        preset = self.preset.get()
+        if preset not in video_dedup.PRESETS:
+            preset = "medium"
+            self.preset.set(preset)
+        self.preset_display.set(PRESET_LABELS.get(preset, preset))
+        self.apply_config(video_dedup.asdict(video_dedup.PRESETS[preset]))
         if save_state:
             self.schedule_state_save()
+
+    def on_preset_selected(self, _event=None) -> None:
+        preset = PRESET_KEYS_BY_LABEL.get(self.preset_display.get(), "medium")
+        self.preset.set(preset)
+        self.load_preset(save_state=True)
 
     def state_variables(self) -> tuple[tk.Variable, ...]:
         return (
             self.preset,
             self.seed,
             self.crop,
+            self.zoom,
             self.mirror,
             self.speed,
             self.brightness,
@@ -1366,7 +1800,24 @@ class VideoToolApp(tk.Tk):
             self.crf,
             self.encoder_preset,
             self.hardware_acceleration,
+            self.blur_background,
+            self.blur_sigma,
+            self.foreground_scale,
+            self.output_aspect,
+            self.target_fps,
+            self.border_file,
+            self.enable_dynamic_effects,
+            self.effect_file,
+            self.effect_dir,
+            self.effect_random_type,
+            self.effect_timing,
+            self.effect_frequency,
+            self.effect_duration,
+            self.effect_opacity,
+            self.effect_key_mode,
+            self.effect_position,
             self.enable_subtitle_pipeline,
+            self.reuse_final_subtitle_cache,
             self.subtitle_source,
             self.subtitle_mode,
             self.subtitle_layout,
@@ -1378,6 +1829,8 @@ class VideoToolApp(tk.Tk):
             self.subtitle_cover_width,
             self.subtitle_cover_height,
             self.subtitle_cover_opacity,
+            self.subtitle_cover_mode,
+            self.subtitle_cover_blur_sigma,
             self.subtitle_font_name,
             self.subtitle_font_size,
             self.subtitle_ocr_language,
@@ -1385,6 +1838,9 @@ class VideoToolApp(tk.Tk):
             self.subtitle_source_language,
             self.subtitle_target_language,
             self.subtitle_glossary,
+            self.translation_backend,
+            self.translation_quality,
+            self.localization_strategy,
             self.llm_base_url,
             self.llm_model,
             self.enable_llm_review,
@@ -1453,15 +1909,47 @@ class VideoToolApp(tk.Tk):
 
     def start(self) -> None:
         source, target = self.input_path.get().strip(), self.output_path.get().strip()
+        if not any((self.enable_subtitle_pipeline.get(), self.enable_recap_stage.get(), self.enable_dedup_stage.get())):
+            messagebox.showwarning("未选择处理阶段", "请至少勾选字幕、解说或去重中的一个阶段。")
+            return
+        if self.enable_recap_stage.get():
+            messagebox.showinfo(
+                "解说阶段使用独立项目",
+                "解说编排需要先由 Agent 生成并校验结构化项目。请在“解说剪辑”页新建或载入项目，"
+                "完成编排后使用该页的“生成最终成片”。\n\n"
+                "主开始按钮当前负责字幕与去重；不会假装已经执行解说阶段。",
+            )
+            return
         if not self.selected_inputs and (not source or not Path(source).exists()):
             messagebox.showwarning("缺少输入", "请选择有效的输入视频或目录。")
             return
-        if not target:
+        if not target and self.enable_dedup_stage.get():
             messagebox.showwarning("缺少输出", "请选择输出视频或目录。")
             return
-        if self.enable_subtitle_pipeline.get() and not self.llm_api_key.get().strip():
+        if not target:
+            raw_source = Path(self.selected_inputs[0]) if self.selected_inputs else Path(source)
+            target = str((raw_source if raw_source.is_dir() else raw_source.parent) / "processed")
+        if (
+            self.enable_subtitle_pipeline.get()
+            and self.translation_quality.get() == "高级翻译"
+            and self.translation_backend.get() != "Agent 模式"
+        ):
+            messagebox.showwarning("高级翻译需要 Agent", "高级翻译的独立终审由 Agent 文件桥接执行，请把翻译执行方式切换为“Agent 模式”。")
+            return
+        if self.enable_subtitle_pipeline.get() and self.translation_backend.get() == "API 模式" and not self.llm_api_key.get().strip():
             messagebox.showwarning("缺少 API Key", "启用自动字幕流水线时需要填写 API Key。")
             return
+        if self.enable_subtitle_pipeline.get() and self.translation_backend.get() == "Agent 模式":
+            bridge_state = agent_bridge.bridge_status(self.agent_bridge_root())
+            if not bridge_state.get("connected"):
+                messagebox.showwarning(
+                    "Agent 尚未连接",
+                    "当前没有可用的 Agent 心跳。请先生成初始化命令，在指定 Codex 对话完成注册并保持监听，然后再开始任务。",
+                )
+                return
+            if self.subtitle_backend.get() == "Docker OCR":
+                messagebox.showwarning("Agent 模式不支持 Docker", "Agent 文件桥接首版仅支持“本机 Python”字幕后端，请切换后再开始。")
+                return
         if self.enable_subtitle_pipeline.get() and self._subtitle_mode_value() == "soft" and self.subtitle_cover.get():
             messagebox.showwarning(
                 "字幕模式冲突",
@@ -1472,8 +1960,13 @@ class VideoToolApp(tk.Tk):
         try:
             seed = int(self.seed.get()) if self.seed.get().strip() else None
             config = self.video_config_dict()
-            video_dedup.load_config(self.preset.get(), None, seed)
-        except ValueError as exc:
+            checked_config = video_dedup.TransformConfig(**config)
+            if self.enable_dedup_stage.get():
+                if checked_config.enable_dynamic_effects:
+                    video_dedup.effect_candidates(checked_config)
+                if checked_config.border_file and not Path(checked_config.border_file).expanduser().is_file():
+                    raise FileNotFoundError(f"找不到边框素材: {checked_config.border_file}")
+        except (OSError, TypeError, ValueError) as exc:
             messagebox.showerror("参数错误", str(exc))
             return
         self.save_last_state()
@@ -1496,10 +1989,12 @@ class VideoToolApp(tk.Tk):
         output = Path(target).resolve()
         source_is_directory = not self.selected_inputs and Path(source).resolve().is_dir()
         output_is_file = len(inputs) == 1 and not source_is_directory and output.suffix.lower() in video_dedup.VIDEO_SUFFIXES
-        if not output_is_file:
-            output.mkdir(parents=True, exist_ok=True)
-        else:
-            output.parent.mkdir(parents=True, exist_ok=True)
+        subtitle_only = self.enable_subtitle_pipeline.get() and not self.enable_dedup_stage.get()
+        if not subtitle_only:
+            if not output_is_file:
+                output.mkdir(parents=True, exist_ok=True)
+            else:
+                output.parent.mkdir(parents=True, exist_ok=True)
 
         for input_file in inputs:
             output_file = output if output_is_file else output / f"{input_file.stem}_local{input_file.suffix}"
@@ -1570,6 +2065,21 @@ class VideoToolApp(tk.Tk):
             cover_x, cover_y, cover_width, cover_height = self._cover_values()
             command += [
                 "--enable-subtitles",
+                "--translation-backend",
+                "agent" if self.translation_backend.get() == "Agent 模式" else "api",
+                "--translation-quality",
+                "advanced" if self.translation_quality.get() == "高级翻译" else "fast",
+                "--localization-strategy",
+                {
+                    "标准影视本地化": "cinematic_standard",
+                    "自然口语": "conversational",
+                    "忠实正式": "formal_faithful",
+                    "海湾中性口语（阿拉伯语）": "gulf_neutral",
+                }.get(self.localization_strategy.get(), "cinematic_standard"),
+                "--agent-bridge-root",
+                str(self.agent_bridge_root()),
+                "--agent-task-title",
+                Path(source).name if source else inputs[0].stem,
                 "--subtitle-source",
                 self._subtitle_source_value(),
                 "--target-language",
@@ -1600,6 +2110,10 @@ class VideoToolApp(tk.Tk):
                 str(self.subtitle_cover_opacity.get()),
                 "--cover-color",
                 "white",
+                "--cover-mode",
+                self._subtitle_cover_mode_value(),
+                "--cover-blur-sigma",
+                str(self.subtitle_cover_blur_sigma.get()),
                 "--font-name",
                 self.subtitle_font_name.get().strip() or "Arial",
                 "--font-size",
@@ -1607,7 +2121,7 @@ class VideoToolApp(tk.Tk):
             ]
             if not use_docker:
                 command += ["--ocr-device", self._ocr_device_value()]
-            if self.enable_llm_review.get():
+            if self.translation_backend.get() == "API 模式" and self.enable_llm_review.get():
                 command += [
                     "--enable-llm-review",
                     "--llm-review-model",
@@ -1628,6 +2142,14 @@ class VideoToolApp(tk.Tk):
                 command += ["--subtitle-cover"]
                 if self.subtitle_cover_auto_detect.get():
                     command += ["--cover-auto-detect"]
+            if not self.reuse_final_subtitle_cache.get():
+                command += ["--force-subtitle-translation"]
+            if not self.enable_dedup_stage.get():
+                command += ["--subtitle-only"]
+
+        if not self.enable_subtitle_pipeline.get() and not self.enable_dedup_stage.get():
+            messagebox.showwarning("没有可执行阶段", "当前主流水线没有选中字幕或去重阶段。")
+            return
 
         if source_is_directory:
             title = f"目录任务 {Path(source).name}（{len(inputs)} 个视频）"
@@ -1635,7 +2157,10 @@ class VideoToolApp(tk.Tk):
             title = f"文件组任务（{len(inputs)} 个视频）"
         else:
             title = f"完整流水线 {inputs[0].name}"
-        self.enqueue_task(title, command, cleanup_paths, self._llm_env())
+        if self.enable_subtitle_pipeline.get() and not self.enable_dedup_stage.get():
+            title = title.replace("完整流水线", "仅字幕").replace("目录任务", "仅字幕目录任务")
+        task_env = self._llm_env() if self.translation_backend.get() == "API 模式" else {"PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK": "True"}
+        self.enqueue_task(title, command, cleanup_paths, task_env)
 
     def _run_task(self, task: QueuedTask) -> None:
         try:
@@ -1718,6 +2243,10 @@ class VideoToolApp(tk.Tk):
                     path.unlink(missing_ok=True)
                 except OSError:
                     pass
+            # Invalidate outstanding Agent replies before terminating local
+            # workers so a late conversation response cannot revive a stopped
+            # task.
+            agent_bridge.request_stop_all(self.agent_bridge_root())
             for task_id, process in processes:
                 if process.poll() is not None:
                     continue
@@ -1747,6 +2276,7 @@ class VideoToolApp(tk.Tk):
                     path.unlink(missing_ok=True)
                 except OSError:
                     pass
+            agent_bridge.request_stop_all(self.agent_bridge_root())
             for _task_id, process in processes:
                 if process.poll() is None:
                     if os.name == "nt":

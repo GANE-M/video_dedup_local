@@ -15,5 +15,5 @@
 
 内置术语表：
 
-- `chinese_history_zh_en_ar.json`：中国历史、宫廷、科举及古装题材。
+- `chinese_history_zh_en_ar.json`：中国历史、宫廷、科举、古装、武侠及中式修仙玄幻题材；包含六扇门和常用修炼体系术语。
 - `western_fantasy_zh_en_ar.json`：西方魔幻、魔兽契约、魔法学院、龙族及冒险题材；不收录普通角色名和地点名。

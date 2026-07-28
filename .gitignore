@@ -1,9 +1,12 @@
 __pycache__/
 *.py[cod]
 *.pyo
+.coverage
+htmlcov/
 
 .venv/
 .venv-ocr/
+.venv-asr/
 venv/
 env/
 
@@ -18,8 +21,11 @@ processed/
 *.avi
 *.webm
 *.m4v
+!effects/*.mp4
 *.mp3
 *.wav
+!recap/voices/*/reference.wav
+!recap/voices/*/preview.wav
 *.m4a
 *.aac
 *.flac
@@ -32,3 +38,9 @@ processed/
 config.local.json
 .video_tool_state.json
 logs/
+agent-bridge/
+.vfx-source-cache/
+previews/
+tts_lab/outputs/
+recap/voices/candidates/**
+!recap/voices/candidates/README.md
