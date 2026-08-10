@@ -38,7 +38,7 @@
 
   <section id="workspace" class="card hidden">
     <div class="toolbar">
-      <label>处理强度<select id="preset"><option value="light">初级</option><option value="medium" selected>中级</option><option value="strong">高级</option><option value="deep">深度</option></select></label>
+      <label>处理强度<select id="preset"><option value="custom" selected>自定义（默认）</option><option value="light">初级</option><option value="medium">中级</option><option value="strong">高级</option><option value="deep">深度</option></select></label>
       <button id="loadPreset">载入预设</button>
       <label>随机种子<input id="seed" type="number" value="2026"></label>
       <label>请求并发<input id="requestedWorkers" type="number" min="1" max="10" value="5"></label>
@@ -86,7 +86,8 @@
 
       <details class="dedup-section"><summary>时间与速度</summary><div id="time" class="settings-grid inset">
       <label>播放速度<input id="speed" type="range" min="0.5" max="2" step="0.005"><output></output></label>
-      <label>淡入淡出（秒）<input id="fadeSeconds" type="range" min="0" max="5" step="0.05"><output></output></label>
+      <label>淡入时长（秒）<input id="fadeInSeconds" type="range" min="0" max="5" step="0.05"><output></output></label>
+      <label>淡出时长（秒）<input id="fadeOutSeconds" type="range" min="0" max="5" step="0.05"><output></output></label>
       <label>裁掉开头（秒）<input id="trimStart" type="number" min="0" max="3600" step="0.1"></label>
       <label>裁掉结尾（秒）<input id="trimEnd" type="number" min="0" max="3600" step="0.1"></label>
       </div></details>

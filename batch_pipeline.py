@@ -1837,7 +1837,7 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument("input")
     parser.add_argument("output")
     parser.add_argument("--input-list", help="JSON 文件路径数组；用于把多选文件作为一个任务组")
-    parser.add_argument("--preset", choices=video_dedup.PRESETS, default="medium")
+    parser.add_argument("--preset", choices=video_dedup.PRESETS, default="custom")
     parser.add_argument("--config", required=True)
     parser.add_argument("--seed", type=int)
     parser.add_argument("--ffmpeg")

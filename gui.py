@@ -24,6 +24,7 @@ from recap_gui import RecapWorkspace
 
 
 PRESET_LABELS = {
+    "custom": "自定义（默认）",
     "light": "初级",
     "medium": "中级",
     "strong": "高级",
@@ -104,8 +105,8 @@ class VideoToolApp(tk.Tk):
     def _make_variables(self) -> None:
         self.input_path = tk.StringVar()
         self.output_path = tk.StringVar()
-        self.preset = tk.StringVar(value="medium")
-        self.preset_display = tk.StringVar(value=PRESET_LABELS["medium"])
+        self.preset = tk.StringVar(value="custom")
+        self.preset_display = tk.StringVar(value=PRESET_LABELS["custom"])
         self.seed = tk.StringVar(value="2026")
         self.crop = tk.DoubleVar()
         self.zoom = tk.DoubleVar()
@@ -116,7 +117,8 @@ class VideoToolApp(tk.Tk):
         self.saturation = tk.DoubleVar()
         self.color = tk.StringVar(value="#8bc34a")
         self.color_opacity = tk.DoubleVar()
-        self.fade = tk.DoubleVar()
+        self.fade_in = tk.DoubleVar()
+        self.fade_out = tk.DoubleVar()
         self.trim_start = tk.DoubleVar()
         self.trim_end = tk.DoubleVar()
         self.music = tk.StringVar()
@@ -282,9 +284,10 @@ class VideoToolApp(tk.Tk):
         video_tab.columnconfigure(1, weight=1)
 
         self._scale_row(time_tab, 0, "播放速度", self.speed, 0.5, 2.0, 0.005)
-        self._scale_row(time_tab, 1, "淡入淡出 (秒)", self.fade, 0, 5, 0.05)
-        self._scale_row(time_tab, 2, "裁掉开头 (秒)", self.trim_start, 0, 30, 0.1)
-        self._scale_row(time_tab, 3, "裁掉结尾 (秒)", self.trim_end, 0, 30, 0.1)
+        self._scale_row(time_tab, 1, "淡入时长 (秒)", self.fade_in, 0, 5, 0.05)
+        self._scale_row(time_tab, 2, "淡出时长 (秒)", self.fade_out, 0, 5, 0.05)
+        self._scale_row(time_tab, 3, "裁掉开头 (秒)", self.trim_start, 0, 30, 0.1)
+        self._scale_row(time_tab, 4, "裁掉结尾 (秒)", self.trim_end, 0, 30, 0.1)
         time_tab.columnconfigure(1, weight=1)
 
         ttk.Checkbutton(audio_tab, text="保留原视频声音", variable=self.keep_audio).grid(row=0, column=0, columnspan=3, sticky="w", pady=6)
@@ -1570,12 +1573,13 @@ class VideoToolApp(tk.Tk):
         effect_key_mode = {"黑色背景": "black", "绿色幕布": "green", "透明通道": "alpha"}.get(self.effect_key_mode.get(), "black")
         effect_position = {"全屏": "full", "顶部": "top", "底部": "bottom"}.get(self.effect_position.get(), "full")
         return {
-            "state_version": 8,
+            "state_version": 9,
             "transform_preset": self.preset.get(),
             "crop_percent": self.crop.get(), "zoom_percent": self.zoom.get(),
             "mirror": self.mirror.get(), "speed": self.speed.get(),
             "brightness": self.brightness.get(), "contrast": self.contrast.get(), "saturation": self.saturation.get(),
-            "color": self.color.get() or None, "color_opacity": self.color_opacity.get(), "fade_seconds": self.fade.get(),
+            "color": self.color.get() or None, "color_opacity": self.color_opacity.get(),
+            "fade_seconds": 0.0, "fade_in_seconds": self.fade_in.get(), "fade_out_seconds": self.fade_out.get(),
             "trim_start": self.trim_start.get(), "trim_end": self.trim_end.get(), "background_music": self.music.get() or None,
             "background_music_dir": self.music_dir.get() or None,
             "music_volume": self.music_volume.get(), "keep_audio": self.keep_audio.get(), "crf": self.crf.get(),
@@ -1666,6 +1670,12 @@ class VideoToolApp(tk.Tk):
                 config["subtitle_ocr_device"] = "cuda"
             if config.get("whisper_device") == "auto":
                 config["whisper_device"] = "cuda"
+        if state_version < 9 and "fade_seconds" in config:
+            legacy_fade = config.get("fade_seconds", 0.0)
+            if config.get("fade_in_seconds") is None:
+                config["fade_in_seconds"] = legacy_fade
+            if config.get("fade_out_seconds") is None:
+                config["fade_out_seconds"] = legacy_fade
         if config.get("subtitle_source") in {
             "自动：优先软字幕，否则语音识别",
             "自动：软字幕→硬字幕OCR→语音识别",
@@ -1698,7 +1708,8 @@ class VideoToolApp(tk.Tk):
             "crop_percent": self.crop, "zoom_percent": self.zoom,
             "mirror": self.mirror, "speed": self.speed, "brightness": self.brightness,
             "contrast": self.contrast, "saturation": self.saturation, "color": self.color, "color_opacity": self.color_opacity,
-            "fade_seconds": self.fade, "trim_start": self.trim_start, "trim_end": self.trim_end,
+            "fade_in_seconds": self.fade_in, "fade_out_seconds": self.fade_out,
+            "trim_start": self.trim_start, "trim_end": self.trim_end,
             "background_music": self.music, "music_volume": self.music_volume, "keep_audio": self.keep_audio,
             "background_music_dir": self.music_dir,
             "crf": self.crf, "preset": self.encoder_preset,
@@ -1765,7 +1776,7 @@ class VideoToolApp(tk.Tk):
     def load_preset(self, save_state: bool = False) -> None:
         preset = self.preset.get()
         if preset not in video_dedup.PRESETS:
-            preset = "medium"
+            preset = "custom"
             self.preset.set(preset)
         self.preset_display.set(PRESET_LABELS.get(preset, preset))
         self.apply_config(video_dedup.asdict(video_dedup.PRESETS[preset]))
@@ -1773,7 +1784,7 @@ class VideoToolApp(tk.Tk):
             self.schedule_state_save()
 
     def on_preset_selected(self, _event=None) -> None:
-        preset = PRESET_KEYS_BY_LABEL.get(self.preset_display.get(), "medium")
+        preset = PRESET_KEYS_BY_LABEL.get(self.preset_display.get(), "custom")
         self.preset.set(preset)
         self.load_preset(save_state=True)
 
@@ -1790,7 +1801,8 @@ class VideoToolApp(tk.Tk):
             self.saturation,
             self.color,
             self.color_opacity,
-            self.fade,
+            self.fade_in,
+            self.fade_out,
             self.trim_start,
             self.trim_end,
             self.music,

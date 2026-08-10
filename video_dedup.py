@@ -75,7 +75,11 @@ class TransformConfig:
     saturation: float = 1.01
     color: str | None = None
     color_opacity: float = 0.0
+    # ``fade_seconds`` is retained for old JSON configs. New callers can
+    # configure the two ends independently, matching the source tool.
     fade_seconds: float = 0.0
+    fade_in_seconds: float | None = None
+    fade_out_seconds: float | None = None
     trim_start: float = 0.0
     trim_end: float = 0.0
     background_music: str | None = None
@@ -146,6 +150,17 @@ def production_strength_preset(
 
 
 PRESETS = {
+    "custom": replace(
+        production_strength_preset(
+            crop=3, filter_opacity=20, music_volume=0, zoom=2,
+            sweep_opacity=12, brightness=12, speed_percent=4,
+        ),
+        color="#363636",
+        trim_start=0.0,
+        trim_end=2.0,
+        fade_in_seconds=0.0,
+        fade_out_seconds=2.0,
+    ),
     "light": production_strength_preset(
         crop=1, filter_opacity=5, music_volume=8, zoom=10,
         sweep_opacity=4, brightness=10, speed_percent=3,
@@ -163,6 +178,18 @@ PRESETS = {
         sweep_opacity=12, brightness=16, speed_percent=12, mirror=True,
     ),
 }
+
+
+def configured_fades(config: TransformConfig, output_duration: float) -> tuple[float, float]:
+    """Return independently capped fade-in/out durations.
+
+    Old configuration files only contain ``fade_seconds``; in that case the
+    legacy value still applies symmetrically.
+    """
+    fade_in = config.fade_seconds if config.fade_in_seconds is None else config.fade_in_seconds
+    fade_out = config.fade_seconds if config.fade_out_seconds is None else config.fade_out_seconds
+    cap = output_duration / 3
+    return min(fade_in, cap), min(fade_out, cap)
 
 
 def find_binary(name: str, explicit: str | None = None) -> str:
@@ -328,7 +355,9 @@ def add_looping_input(command: list[str], path: Path) -> None:
         command += ["-stream_loop", "-1", "-i", str(path)]
 
 
-def base_video_filters(info: dict, config: TransformConfig) -> list[str]:
+def spatial_video_filters(
+    info: dict, config: TransformConfig, *, restore_canvas: bool = True,
+) -> list[str]:
     filters: list[str] = []
     if config.zoom_percent:
         zoom = 1.0 + config.zoom_percent / 100.0
@@ -339,30 +368,37 @@ def base_video_filters(info: dict, config: TransformConfig) -> list[str]:
         # Match the observed preset structure: enlarge the source, then crop
         # a slightly smaller centered foreground before restoring canvas size.
         ratio = 1 - config.crop_percent / 100.0
-        filters += [
-            f"crop={even(info['width'] * ratio)}:{even(info['height'] * ratio)}:(iw-ow)/2:(ih-oh)/2",
-            f"scale={info['width']}:{info['height']}:flags=lanczos",
-            "setsar=1",
-        ]
+        filters.append(
+            f"crop={even(info['width'] * ratio)}:{even(info['height'] * ratio)}:(iw-ow)/2:(ih-oh)/2"
+        )
+        if restore_canvas:
+            filters += [f"scale={info['width']}:{info['height']}:flags=lanczos", "setsar=1"]
     elif config.crop_percent:
         ratio = 1 - config.crop_percent / 100.0 * 2
-        filters += [
-            f"crop=trunc(iw*{ratio:.6f}/2)*2:trunc(ih*{ratio:.6f}/2)*2",
-            f"scale={info['width']}:{info['height']}:flags=lanczos",
-            "setsar=1",
-        ]
-    if config.mirror:
-        filters.append("hflip")
+        filters.append(f"crop=trunc(iw*{ratio:.6f}/2)*2:trunc(ih*{ratio:.6f}/2)*2")
+        if restore_canvas:
+            filters += [f"scale={info['width']}:{info['height']}:flags=lanczos", "setsar=1"]
+    return filters
+
+
+def global_video_filters(config: TransformConfig) -> list[str]:
+    filters: list[str] = []
+    if abs(config.speed - 1.0) > 1e-6:
+        filters.append(f"setpts=PTS/{config.speed:.6f}")
     filters.append(
         f"eq=brightness={config.brightness:.4f}:contrast={config.contrast:.4f}:"
         f"saturation={config.saturation:.4f}"
     )
+    if config.mirror:
+        filters.append("hflip")
     if config.color and config.color_opacity > 0:
         color = config.color.replace("#", "0x")
         filters.append(f"drawbox=x=0:y=0:w=iw:h=ih:color={color}@{config.color_opacity:.4f}:t=fill")
-    if abs(config.speed - 1.0) > 1e-6:
-        filters.append(f"setpts=PTS/{config.speed:.6f}")
     return filters
+
+
+def base_video_filters(info: dict, config: TransformConfig) -> list[str]:
+    return spatial_video_filters(info, config) + global_video_filters(config)
 
 
 def effect_input_filter(
@@ -403,6 +439,11 @@ def build_command(input_path: Path, output_path: Path, info: dict, config: Trans
         raise ValueError("zoom_percent 必须在 0 到 100 之间")
     if not 0.25 <= config.speed <= 4.0:
         raise ValueError("speed 必须在 0.25 到 4.0 之间")
+    if config.fade_seconds < 0 or any(
+        value is not None and value < 0
+        for value in (config.fade_in_seconds, config.fade_out_seconds)
+    ):
+        raise ValueError("fade durations cannot be negative")
     if config.trim_start + config.trim_end >= info["duration"]:
         raise ValueError("首尾裁剪时长超过视频总时长")
 
@@ -430,9 +471,15 @@ def build_command(input_path: Path, output_path: Path, info: dict, config: Trans
         input_indexes["music"] = next_input_index
         next_input_index += 1
 
-    output_duration = max(0.01, (info["duration"] - config.trim_start - config.trim_end) / config.speed)
+    source_duration = max(0.01, info["duration"] - config.trim_start - config.trim_end)
+    output_duration = max(0.01, source_duration / config.speed)
+    fade_in, fade_out = configured_fades(config, output_duration)
     width, height = output_dimensions(info, config.output_aspect)
-    effect_events = plan_effect_events(config, output_duration)
+    # Blur/PiP follows the observed source order: compose the effect first,
+    # then speed up the whole picture. Its event timeline is therefore still
+    # in source time here; other paths already apply speed before overlays.
+    effect_duration = source_duration if config.blur_background else output_duration
+    effect_events = plan_effect_events(config, effect_duration)
     effect_inputs: list[tuple[int, Path, float, float]] = []
     for path, start, duration in effect_events:
         add_looping_input(command, path)
@@ -459,20 +506,27 @@ def build_command(input_path: Path, output_path: Path, info: dict, config: Trans
 
     has_source_audio = info["has_audio"] and config.keep_audio
     audio_filters = atempo_filters(config.speed)
-    if config.fade_seconds:
-        fade = min(config.fade_seconds, output_duration / 3)
-        audio_filters += [f"afade=t=in:st=0:d={fade:.3f}", f"afade=t=out:st={max(0, output_duration-fade):.3f}:d={fade:.3f}"]
+    if fade_in:
+        audio_filters.append(f"afade=t=in:st=0:d={fade_in:.3f}")
+    if fade_out:
+        audio_filters.append(
+            f"afade=t=out:st={max(0, output_duration-fade_out):.3f}:d={fade_out:.3f}"
+        )
 
     if advanced_video:
         graph: list[str] = []
         if config.blur_background:
             foreground_width = even(width * config.foreground_scale)
             foreground_height = even(height * config.foreground_scale)
+            foreground_filters = spatial_video_filters(info, config, restore_canvas=False)
+            foreground_chain = ",".join(foreground_filters)
+            if foreground_chain:
+                foreground_chain += ","
             graph += [
                 "[0:v]split=2[bgsrc][fgsrc]",
                 f"[bgsrc]scale={width}:{height}:force_original_aspect_ratio=increase,"
                 f"crop={width}:{height},gblur=sigma={config.blur_sigma:.3f}[bg]",
-                f"[fgsrc]{','.join(linear_video_filters)},"
+                f"[fgsrc]{foreground_chain}"
                 f"scale={foreground_width}:{foreground_height}:force_original_aspect_ratio=decrease[fg]",
                 "[bg][fg]overlay=(W-w)/2:(H-h)/2:format=auto[vbase]",
             ]
@@ -505,13 +559,15 @@ def build_command(input_path: Path, output_path: Path, info: dict, config: Trans
             ]
             current_video = "vborder"
 
-        final_filters: list[str] = []
-        if config.fade_seconds:
-            fade = min(config.fade_seconds, output_duration / 3)
-            final_filters += [
-                f"fade=t=in:st=0:d={fade:.3f}",
-                f"fade=t=out:st={max(0, output_duration-fade):.3f}:d={fade:.3f}",
-            ]
+        # The observed source pipeline applies mirror, speed, brightness and
+        # tint after composing the blurred background, foreground and sweep.
+        final_filters: list[str] = global_video_filters(config) if config.blur_background else []
+        if fade_in:
+            final_filters.append(f"fade=t=in:st=0:d={fade_in:.3f}")
+        if fade_out:
+            final_filters.append(
+                f"fade=t=out:st={max(0, output_duration-fade_out):.3f}:d={fade_out:.3f}"
+            )
         if config.target_fps > 0:
             final_filters.append(f"fps={config.target_fps:.3f}:round=up")
         final_filters += ["setsar=1", "format=yuv420p"]
@@ -541,12 +597,12 @@ def build_command(input_path: Path, output_path: Path, info: dict, config: Trans
         else:
             command += ["-an"]
     else:
-        if config.fade_seconds:
-            fade = min(config.fade_seconds, output_duration / 3)
-            linear_video_filters += [
-                f"fade=t=in:st=0:d={fade:.3f}",
-                f"fade=t=out:st={max(0, output_duration-fade):.3f}:d={fade:.3f}",
-            ]
+        if fade_in:
+            linear_video_filters.append(f"fade=t=in:st=0:d={fade_in:.3f}")
+        if fade_out:
+            linear_video_filters.append(
+                f"fade=t=out:st={max(0, output_duration-fade_out):.3f}:d={fade_out:.3f}"
+            )
         if config.target_fps > 0:
             linear_video_filters.append(f"fps={config.target_fps:.3f}:round=up")
         command += ["-vf", ",".join(linear_video_filters)]
@@ -706,7 +762,7 @@ def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="完全本地的批量视频变换工具")
     parser.add_argument("input", help="输入视频或视频目录")
     parser.add_argument("output", help="输出视频或输出目录")
-    parser.add_argument("--preset", choices=PRESETS, default="medium", help="变换强度")
+    parser.add_argument("--preset", choices=PRESETS, default="custom", help="变换强度")
     parser.add_argument("--config", help="JSON 自定义配置；覆盖预设参数")
     parser.add_argument("--seed", type=int, help="加入可复现的轻微随机变化")
     parser.add_argument("--ffmpeg", help="ffmpeg 可执行文件路径")

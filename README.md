@@ -40,7 +40,7 @@
 ### 画面增强与批处理
 
 - 单文件、多个文件或目录第一层视频批处理。
-- `light`、`medium`、`strong`、`deep` 四档强度预设，也可完全自定义。
+- `custom`（自定义默认）、`light`、`medium`、`strong`、`deep` 五档强度预设，也可完全自定义。
 - NVIDIA NVENC、AMD AMF、Intel QSV、Apple VideoToolbox 和 CPU 编码。
 - 模糊背景画中画、比例标准化、固定帧率、镜像、亮度、缩放和变速。
 - 动态扫光、星光、飞雪、流星、烟花等素材，可随机出现或全程循环。
@@ -127,13 +127,13 @@ py -3.12 -m venv .venv
 单视频画面处理：
 
 ```powershell
-py -3.12 .\video_dedup.py input.mp4 output.mp4 --preset medium
+py -3.12 .\video_dedup.py input.mp4 output.mp4 --preset custom
 ```
 
 完整目录流水线：
 
 ```powershell
-py -3.12 .\batch_pipeline.py input_dir output_dir --config config.local.json --preset medium
+py -3.12 .\batch_pipeline.py input_dir output_dir --config config.local.json --preset custom
 ```
 
 解说项目：

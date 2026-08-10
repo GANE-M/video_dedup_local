@@ -38,7 +38,7 @@ from .worker import GatewayWorker, normalize_settings
 from .workflows import RECAP_PLANNING_STAGE, RECAP_RENDER_STAGE, WorkflowCheckpointStore, WorkflowPlan
 
 
-WEB_BUILD_VERSION = "20260810-01"
+WEB_BUILD_VERSION = "20260810-02"
 
 
 def _redact_public_value(value: Any, roots: tuple[Path, ...] = ()) -> Any:
@@ -593,7 +593,7 @@ def create_app(settings: GatewaySettings | None = None, *, start_worker: bool = 
             "presets": preset_payload,
             "glossaries": glossaries,
             "choices": {
-                "preset": ["light", "medium", "strong", "deep"],
+                "preset": list(video_dedup.PRESETS),
                 "hardware_acceleration": ["auto", "nvidia", "amd", "intel", "apple", "cpu"],
                 "encoder_preset": ["ultrafast", "veryfast", "fast", "medium", "slow"],
                 "output_aspect": ["source", "portrait", "landscape", "square"],

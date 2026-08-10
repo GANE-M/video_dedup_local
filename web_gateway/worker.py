@@ -37,7 +37,7 @@ from .workflows import (
 
 
 PIPELINE_CHOICES = {
-    "preset": {"light", "medium", "strong", "deep"},
+    "preset": set(video_dedup.PRESETS),
     "hardware_acceleration": {"auto", "nvidia", "amd", "intel", "apple", "cpu"},
     "translation_backend": {"agent", "api"},
     "translation_quality": {"fast", "advanced"},
@@ -53,7 +53,7 @@ PIPELINE_CHOICES = {
 }
 
 PIPELINE_DEFAULTS: dict[str, Any] = {
-    "preset": "medium",
+    "preset": "custom",
     "seed": 2026,
     "hardware_acceleration": "nvidia",
     "enable_dedup": True,

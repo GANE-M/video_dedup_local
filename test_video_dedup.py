@@ -9,8 +9,9 @@ import video_dedup as MODULE
 
 
 class CommandTests(unittest.TestCase):
-    def test_observed_four_level_presets(self):
+    def test_observed_presets_and_screenshot_default(self):
         expected = {
+            "custom": (3, 2, 0.20, 0.12, 0.12, 1.04, False),
             "light": (1, 10, 0.05, 0.04, 0.10, 1.03, False),
             "medium": (2, 15, 0.08, 0.06, 0.14, 1.06, False),
             "strong": (4, 20, 0.10, 0.10, 0.16, 1.10, False),
@@ -27,6 +28,46 @@ class CommandTests(unittest.TestCase):
                 ),
                 values,
             )
+        custom = MODULE.PRESETS["custom"]
+        self.assertEqual(custom.color, "#363636")
+        self.assertEqual(custom.trim_end, 2.0)
+        self.assertEqual(custom.fade_in_seconds, 0.0)
+        self.assertEqual(custom.fade_out_seconds, 2.0)
+        self.assertEqual(custom.music_volume, 0.0)
+
+    def test_screenshot_default_uses_only_fade_out(self):
+        command = MODULE.build_command(
+            Path("input.mp4"), Path("output.mp4"),
+            {"width": 1080, "height": 1920, "duration": 12.0, "has_audio": True},
+            MODULE.PRESETS["custom"], "ffmpeg",
+        )
+        joined = " ".join(command)
+        self.assertNotIn("fade=t=in", joined)
+        self.assertNotIn("afade=t=in", joined)
+        self.assertIn("fade=t=out", joined)
+        self.assertIn("afade=t=out", joined)
+        self.assertIn("color=0x363636@0.2000", joined)
+        self.assertIn("aa=0.1200", joined)
+        self.assertIn("trim=duration=10.000", joined)
+        self.assertIn("-t 9.615", joined)
+
+    def test_legacy_fade_remains_symmetric(self):
+        config = MODULE.replace(
+            MODULE.PRESETS["light"],
+            fade_seconds=1.0,
+            fade_in_seconds=None,
+            fade_out_seconds=None,
+        )
+        command = MODULE.build_command(
+            Path("input.mp4"), Path("output.mp4"),
+            {"width": 1080, "height": 1920, "duration": 12.0, "has_audio": True},
+            config, "ffmpeg",
+        )
+        joined = " ".join(command)
+        self.assertIn("fade=t=in", joined)
+        self.assertIn("fade=t=out", joined)
+        self.assertIn("afade=t=in", joined)
+        self.assertIn("afade=t=out", joined)
 
     def test_medium_preset_builds_zoom_blur_sweep_and_fixed_fps(self):
         command = MODULE.build_command(

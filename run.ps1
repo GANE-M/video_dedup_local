@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory = $true, Position = 0)] [string] $InputPath,
     [Parameter(Mandatory = $true, Position = 1)] [string] $OutputPath,
-    [ValidateSet("light", "medium", "strong")] [string] $Preset = "medium",
+    [ValidateSet("custom", "light", "medium", "strong", "deep")] [string] $Preset = "custom",
     [int] $Seed = 2026,
     [string] $Config = ""
 )
