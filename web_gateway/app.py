@@ -29,6 +29,7 @@ from .agent_http import RemoteAgentBridge, recap_remote_rules, remote_rules
 from .agent_orchestration import RECAP_STAGES, stage_rule_path
 from .database import GatewayDatabase, hash_secret, now_iso
 from .preflight import run_preflight
+from .publishing_service import PUBLISHING_RULES, PublishingService
 from .recap_service import RecapService
 from .security import SlidingWindowRateLimiter, normalize_public_recap_rendering
 from .settings import GatewaySettings
@@ -37,7 +38,7 @@ from .worker import GatewayWorker, normalize_settings
 from .workflows import RECAP_PLANNING_STAGE, RECAP_RENDER_STAGE, WorkflowCheckpointStore, WorkflowPlan
 
 
-WEB_BUILD_VERSION = "20260727-30"
+WEB_BUILD_VERSION = "20260810-01"
 
 
 def _redact_public_value(value: Any, roots: tuple[Path, ...] = ()) -> Any:
@@ -67,7 +68,10 @@ class UploadDeclaration(BaseModel):
     @classmethod
     def validate_role(cls, value: str) -> str:
         normalized = str(value or "video").strip().casefold()
-        if normalized not in {"video", "subtitle_final", "music", "music_pool", "border", "effect", "effect_pool"}:
+        if normalized not in {
+            "video", "subtitle_final", "cover", "series_info", "music",
+            "music_pool", "border", "effect", "effect_pool",
+        }:
             raise ValueError("不支持的上传用途")
         return normalized
 
@@ -99,6 +103,14 @@ class AgentCheckpointBody(AgentJobBody):
 
 
 class AgentSubmitBody(AgentJobBody):
+    response: dict[str, Any]
+
+
+class PublishingAgentBody(BaseModel):
+    claim_id: str = Field(min_length=8, max_length=256)
+
+
+class PublishingAgentSubmitBody(PublishingAgentBody):
     response: dict[str, Any]
 
 
@@ -348,9 +360,10 @@ def create_app(settings: GatewaySettings | None = None, *, start_worker: bool = 
             record["work_directory"],
             record["access_key_id"],
         )
-    worker = GatewayWorker(settings, database, storage)
+    publishing = PublishingService(storage)
+    worker = GatewayWorker(settings, database, storage, publishing=publishing)
     remote_agent = RemoteAgentBridge(database, storage, settings.project_root)
-    recap = RecapService(storage)
+    recap = RecapService(storage, publishing=publishing)
     session_lock = threading.Lock()
     upload_limiter = SlidingWindowRateLimiter(
         settings.maximum_upload_chunks_per_minute, 60.0
@@ -378,6 +391,7 @@ def create_app(settings: GatewaySettings | None = None, *, start_worker: bool = 
     app.state.storage = storage
     app.state.worker = worker
     app.state.recap = recap
+    app.state.publishing = publishing
     app.mount("/static", StaticFiles(directory=Path(__file__).with_name("static")), name="static")
     if settings.allowed_origins:
         app.add_middleware(
@@ -385,7 +399,10 @@ def create_app(settings: GatewaySettings | None = None, *, start_worker: bool = 
             allow_origins=list(settings.allowed_origins),
             allow_credentials=False,
             allow_methods=["GET", "POST", "PUT", "DELETE"],
-            allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-Agent-Token", "X-Chunk-SHA256"],
+            allow_headers=[
+                "Authorization", "Content-Type", "X-API-Key", "X-Agent-Token",
+                "X-Agent-Run-ID", "X-Chunk-SHA256",
+            ],
         )
 
     def client_key(request: Request) -> dict[str, Any]:
@@ -455,11 +472,12 @@ def create_app(settings: GatewaySettings | None = None, *, start_worker: bool = 
         base = settings.public_base_url.rstrip("/")
         prefix = f"{base}/api/v1/agent/sessions/{access_key_id}"
         command = (
-            "请将本对话初始化为此账号的远程短剧字幕翻译 Agent，并持续监听后续任务，"
+            "请将本对话初始化为此账号的远程短剧复合 Agent，并持续监听后续任务，"
             "直到接口返回会话失效或我明确要求停止。禁止使用第三方翻译API。"
             "如果当前环境支持持续目标或自动续跑机制，请立即建立持续监听目标。"
             "先读取规则；之后约每60秒调用监听接口。领取任务后必须在同一回合持续处理、"
-            "心跳、分集检查点和最终提交，不得只报告仍在进行；提交成功后继续监听下一任务。\n"
+            "按事件类型完成字幕、发布物料或解说任务的心跳、检查点和最终提交，"
+            "不得只报告仍在进行；提交成功后继续监听下一任务。\n"
             "读取规则、读取材料、完成单集、生成草稿和自检都不是停止点；"
             "进度只能作为非最终更新，随后必须立即继续调用工具，绝对不得等待用户说“继续”。\n"
             f"规则：GET {prefix}/rules\n"
@@ -584,6 +602,7 @@ def create_app(settings: GatewaySettings | None = None, *, start_worker: bool = 
                 "effect_key_mode": ["black", "green", "alpha"],
                 "effect_position": ["full", "top", "bottom"],
                 "translation_backend": ["agent", "api"],
+                "publishing_language": ["auto", "English", "Arabic"],
                 "translation_quality": ["fast", "advanced"],
                 "localization_strategy": ["cinematic_standard", "conversational", "formal_faithful", "gulf_neutral"],
                 "subtitle_source": ["auto", "auto-ocr", "soft-asr", "ocr-asr", "soft", "hard-ocr", "asr"],
@@ -594,7 +613,10 @@ def create_app(settings: GatewaySettings | None = None, *, start_worker: bool = 
                 "cover_mode": ["blur", "color"],
                 "font_name": ["Arial", "Microsoft YaHei", "Microsoft YaHei UI", "SimHei", "SimSun", "Noto Sans", "Noto Sans Arabic", "Segoe UI", "Tahoma"],
             },
-            "upload_roles": ["video", "subtitle_final", "music", "music_pool", "border", "effect", "effect_pool"],
+            "upload_roles": [
+                "video", "subtitle_final", "cover", "series_info", "music",
+                "music_pool", "border", "effect", "effect_pool",
+            ],
             "limits": {
                 "chunk_size": settings.chunk_size,
                 "maximum_files_per_job": 200,
@@ -981,8 +1003,12 @@ def create_app(settings: GatewaySettings | None = None, *, start_worker: bool = 
         job = owned_job(request, job_id)
         if job["status"] in {"completed", "failed", "cancelled"}:
             return {"event": "ALREADY_FINISHED", "status": job["status"]}
-        if job["status"] in {"uploading", "queued", "waiting_recap_agent", "recap_ready"}:
+        if job["status"] in {
+            "uploading", "queued", "waiting_publishing_agent",
+            "waiting_recap_agent", "recap_ready",
+        }:
             paths = storage.paths_from_job(job)
+            publishing.cancel(paths)
             recap.cancel_planning(paths)
             database.set_job_status(job_id, "cancelled", cancelled_at=now_iso())
             database.add_event(job_id, "任务在执行前已取消", level="warning")
@@ -1356,6 +1382,24 @@ def create_app(settings: GatewaySettings | None = None, *, start_worker: bool = 
                     "verify_endpoint": f"{prefix}/capabilities/verify",
                 }
         for job in jobs:
+            if (
+                job["status"] == "waiting_publishing_agent"
+                and publishing.status(storage.paths_from_job(job)).get("status") == "completed"
+            ):
+                position = database.queue_summary()["waiting"] + 1
+                database.set_job_status(
+                    job["id"], "queued", queue_position=position,
+                    completed_at=None, error=None, process_pid=None,
+                )
+                continue
+            publishing_event = publishing.claim(
+                job, storage.paths_from_job(job), settings.public_base_url
+            )
+            if publishing_event:
+                lease = database.mark_agent_session_work(access_key_id)
+                publishing_event["account_session_generation"] = session["generation"]
+                publishing_event["listener_lease_id"] = lease["listener_lease_id"]
+                return publishing_event
             recap_event = recap.claim_planning(job, storage.paths_from_job(job), settings.public_base_url)
             if recap_event:
                 lease = database.mark_agent_session_work(access_key_id)
@@ -1446,12 +1490,60 @@ def create_app(settings: GatewaySettings | None = None, *, start_worker: bool = 
             artifact_path,
             agent_run_id=request.headers.get("x-agent-run-id", ""),
         )
+        publishing.record_artifact_fetch(paths, artifact_path)
         media_type = mimetypes.guess_type(path.name)[0]
         if path.suffix.casefold() in {".md", ".txt", ".log", ".srt", ".csv"}:
             media_type = "text/plain; charset=utf-8"
         elif path.suffix.casefold() == ".json":
             media_type = "application/json"
         return FileResponse(path, media_type=media_type, content_disposition_type="inline")
+
+    @app.get(
+        "/api/v1/agent/jobs/{job_id}/publishing/rules",
+        response_class=PlainTextResponse,
+    )
+    async def agent_publishing_rules(job_id: str, request: Request) -> str:
+        agent_job(request, job_id)
+        return PUBLISHING_RULES
+
+    @app.post("/api/v1/agent/jobs/{job_id}/publishing/heartbeat")
+    async def agent_publishing_heartbeat(
+        job_id: str, body: PublishingAgentBody, request: Request,
+    ) -> dict[str, Any]:
+        job = agent_job(request, job_id)
+        if job["status"] in {"cancelled", "failed", "completed"}:
+            raise HTTPException(status_code=409, detail="任务已经结束，不能提交发布物料")
+        try:
+            return publishing.heartbeat(storage.paths_from_job(job), body.claim_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/v1/agent/jobs/{job_id}/publishing/submit")
+    async def agent_publishing_submit(
+        job_id: str, body: PublishingAgentSubmitBody, request: Request,
+    ) -> dict[str, Any]:
+        job = agent_job(request, job_id)
+        if job["status"] in {"cancelled", "failed", "completed"}:
+            raise HTTPException(status_code=409, detail="任务已经结束，不能提交发布物料")
+        try:
+            result = publishing.submit(
+                storage.paths_from_job(job), body.claim_id, body.response
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if job["status"] == "waiting_publishing_agent":
+            position = database.queue_summary()["waiting"] + 1
+            database.set_job_status(
+                job_id, "queued", queue_position=position, completed_at=None,
+                error=None, process_pid=None,
+            )
+            database.add_event(
+                job_id,
+                "通用 Agent 发布方案已验收，任务返回服务器队列继续去重/渲染",
+                data={"workflow_stage": "publishing_planning"},
+            )
+            result["queue_position"] = position
+        return result
 
     @app.get("/api/v1/agent/jobs/{job_id}/recap/rules", response_class=PlainTextResponse)
     async def agent_recap_rules(job_id: str, request: Request) -> str:

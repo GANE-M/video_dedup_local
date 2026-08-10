@@ -18,7 +18,10 @@ from .settings import GatewaySettings
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
 AUDIO_SUFFIXES = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
-UPLOAD_ROLES = {"video", "subtitle_final", "music", "music_pool", "border", "effect", "effect_pool"}
+UPLOAD_ROLES = {
+    "video", "subtitle_final", "music", "music_pool", "border", "effect", "effect_pool",
+    "cover", "series_info",
+}
 TEXT_SUFFIXES = {".json", ".md", ".txt", ".log", ".srt", ".csv"}
 WINDOWS_RESERVED = {
     "con", "prn", "aux", "nul",
@@ -60,6 +63,8 @@ def safe_upload_name(value: str, role: str = "video") -> str:
         "border": VIDEO_SUFFIXES | IMAGE_SUFFIXES,
         "effect": VIDEO_SUFFIXES | IMAGE_SUFFIXES,
         "effect_pool": VIDEO_SUFFIXES | IMAGE_SUFFIXES,
+        "cover": {".png"},
+        "series_info": {".txt"},
     }[role]
     if suffix not in allowed:
         raise ValueError(f"{role} 不支持的文件格式: {suffix or '无扩展名'}")
@@ -688,6 +693,7 @@ class JobStorage:
         roots = [
             ("videos", paths.videos),
             ("subtitles", paths.subtitles),
+            ("assets", paths.assets),
             ("logs", paths.logs),
             ("agent", paths.agent),
             ("config", paths.config),

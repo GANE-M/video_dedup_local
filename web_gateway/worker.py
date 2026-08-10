@@ -19,6 +19,8 @@ from recap.pacing import normalize_preset
 
 from .agent_http import RemoteAgentBridge
 from .database import GatewayDatabase, now_iso
+from .publishing_materials import build_publishing_materials
+from .publishing_service import PublishingService
 from .recap_service import RecapService
 from .settings import GatewaySettings
 from .storage import JobPaths, JobStorage
@@ -26,6 +28,8 @@ from .security import normalize_public_recap_rendering, validate_public_http_url
 from .workflows import (
     DEDUP_STAGE,
     RECAP_PLANNING_STAGE,
+    PUBLISHING_PLANNING_STAGE,
+    PUBLISHING_RENDER_STAGE,
     SUBTITLE_STAGE,
     WorkflowCheckpointStore,
     WorkflowPlan,
@@ -45,6 +49,7 @@ PIPELINE_CHOICES = {
     "subtitle_layout": {"replace", "bilingual"},
     "subtitle_position": {"auto", "bottom", "above-original", "top"},
     "cover_mode": {"blur", "color"},
+    "publishing_language": {"auto", "English", "Arabic"},
 }
 
 PIPELINE_DEFAULTS: dict[str, Any] = {
@@ -54,6 +59,8 @@ PIPELINE_DEFAULTS: dict[str, Any] = {
     "enable_dedup": True,
     "enable_subtitles": True,
     "enable_recap": False,
+    "enable_publishing": False,
+    "publishing_language": "auto",
     "translation_backend": "agent",
     "translation_quality": "fast",
     "localization_strategy": "cinematic_standard",
@@ -142,7 +149,8 @@ def normalize_settings(value: dict[str, Any] | None, *, trusted_normalized: bool
     submitted = dict(value or {})
     pipeline = {**PIPELINE_DEFAULTS, **dict(submitted.get("pipeline") or {})}
     for key in (
-        "enable_dedup", "enable_subtitles", "enable_recap", "subtitle_cover", "cover_auto_detect", "force_subtitle_translation",
+        "enable_dedup", "enable_subtitles", "enable_recap", "enable_publishing",
+        "subtitle_cover", "cover_auto_detect", "force_subtitle_translation",
         "enable_llm_review",
     ):
         if not isinstance(pipeline.get(key), bool):
@@ -192,8 +200,11 @@ def normalize_settings(value: dict[str, Any] | None, *, trusted_normalized: bool
         raise ValueError("review_confidence_threshold 必须在0到1之间")
     if pipeline["translation_quality"] == "advanced" and pipeline["translation_backend"] != "agent":
         raise ValueError("高级翻译只能使用 Agent 模式")
-    if not any((pipeline["enable_subtitles"], pipeline["enable_recap"], pipeline["enable_dedup"])):
-        raise ValueError("请至少启用字幕、解说或去重中的一个阶段")
+    if not any((
+        pipeline["enable_subtitles"], pipeline["enable_recap"],
+        pipeline["enable_dedup"], pipeline["enable_publishing"],
+    )):
+        raise ValueError("请至少启用字幕、解说、发布物料或去重中的一个阶段")
     preset = pipeline["preset"]
     video_config = dataclasses.asdict(video_dedup.PRESETS[preset])
     allowed_video_fields = {field.name for field in dataclasses.fields(video_dedup.TransformConfig)}
@@ -219,12 +230,20 @@ def hidden_subprocess_kwargs() -> dict[str, Any]:
 
 
 class GatewayWorker:
-    def __init__(self, settings: GatewaySettings, database: GatewayDatabase, storage: JobStorage):
+    def __init__(
+        self,
+        settings: GatewaySettings,
+        database: GatewayDatabase,
+        storage: JobStorage,
+        *,
+        publishing: PublishingService | None = None,
+    ):
         self.settings = settings
         self.database = database
         self.storage = storage
         self.remote_agent = RemoteAgentBridge(database, storage, settings.project_root)
         self.recap = RecapService(storage)
+        self.publishing = publishing or PublishingService(storage)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._current_process: subprocess.Popen[str] | None = None
@@ -456,6 +475,74 @@ class GatewayWorker:
             },
         )
 
+    @staticmethod
+    def _publishing_language(normalized: dict[str, Any]) -> str:
+        pipeline = normalized["pipeline"]
+        selected = str(pipeline.get("publishing_language") or "auto")
+        if selected != "auto":
+            return selected
+        if pipeline.get("enable_recap"):
+            return str(normalized.get("recap", {}).get("target_language") or "English")
+        if pipeline.get("enable_subtitles"):
+            return str(pipeline.get("target_language") or "English")
+        return "English"
+
+    def _begin_publishing_stage(
+        self,
+        job: dict[str, Any],
+        paths: JobPaths,
+        normalized: dict[str, Any],
+        checkpoints: WorkflowCheckpointStore,
+    ) -> bool:
+        if checkpoints.completed(PUBLISHING_PLANNING_STAGE):
+            return True
+        state = self.publishing.queue(
+            job, paths, self._publishing_language(normalized)
+        )
+        if state.get("status") == "completed":
+            plan = self.publishing.plan(paths)
+            checkpoints.complete(
+                PUBLISHING_PLANNING_STAGE,
+                {
+                    "quality_score": plan["quality_score"],
+                    "platform": plan.get("platform"),
+                },
+            )
+            return True
+        self.database.set_job_status(
+            job["id"], "waiting_publishing_agent", process_pid=None
+        )
+        self.database.add_event(
+            job["id"],
+            "发布素材已就绪，等待通用 Agent 生成封面方案与 TikTok 发布文案",
+            data={
+                "workflow_stage": PUBLISHING_PLANNING_STAGE,
+                "publishing_status": state.get("status"),
+            },
+        )
+        return False
+
+    def _render_publishing_stage(
+        self,
+        paths: JobPaths,
+        checkpoints: WorkflowCheckpointStore,
+        *,
+        recap: bool = False,
+    ) -> dict[str, Any]:
+        if checkpoints.completed(PUBLISHING_RENDER_STAGE):
+            return {"resume": True}
+        result = build_publishing_materials(
+            paths, self.publishing.plan(paths), recap=recap
+        )
+        checkpoints.complete(
+            PUBLISHING_RENDER_STAGE,
+            {
+                "copy_file": Path(result["copy_file"]).name,
+                "cover_files": [Path(item).name for item in result["cover_files"]],
+            },
+        )
+        return result
+
     def _run_job(self, job: dict[str, Any]) -> None:
         paths = self.storage.paths_from_job(job)
         normalized = normalize_settings(job["settings"], trusted_normalized=True)
@@ -475,6 +562,10 @@ class GatewayWorker:
                 "已复用上传的字幕终稿，跳过字幕识别与翻译",
                 data={"workflow_stage": RECAP_PLANNING_STAGE, "resume": True},
             )
+            if pipeline["enable_publishing"] and not self._begin_publishing_stage(
+                job, paths, normalized, checkpoints
+            ):
+                return
             self._begin_recap_stage(job, paths, normalized)
             return
 
@@ -514,6 +605,11 @@ class GatewayWorker:
                 data={"workflow_stage": SUBTITLE_STAGE, "resume": True},
             )
 
+        if pipeline["enable_publishing"] and not self._begin_publishing_stage(
+            job, paths, normalized, checkpoints
+        ):
+            return
+
         if pipeline["enable_recap"]:
             self._begin_recap_stage(job, paths, normalized)
             return
@@ -544,6 +640,17 @@ class GatewayWorker:
                 job["id"],
                 "断点续做：去重/成片阶段已经完成，本次跳过编码",
                 data={"workflow_stage": DEDUP_STAGE, "resume": True},
+            )
+
+        if pipeline["enable_publishing"]:
+            result = self._render_publishing_stage(paths, checkpoints)
+            self.database.add_event(
+                job["id"],
+                "发布物料已生成：processed 内包含成片、对应封面和可直接粘贴的 TikTok 文案",
+                data={
+                    "workflow_stage": PUBLISHING_RENDER_STAGE,
+                    "cover_count": len(result.get("cover_files") or []),
+                },
             )
 
         self._complete_job(job, paths, normalized, checkpoints)

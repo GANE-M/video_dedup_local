@@ -570,6 +570,12 @@ def _asr_language_code(source_language: str) -> str:
 
 def _asr_python_executable() -> str:
     """Use the isolated ASR environment so Torch/Paddle and CTranslate2 do not share cuDNN DLLs."""
+    configured = str(os.environ.get("VIDEO_TOOL_ASR_PYTHON") or "").strip()
+    if configured:
+        candidate = Path(configured).expanduser().resolve()
+        if not candidate.is_file():
+            raise RuntimeError(f"VIDEO_TOOL_ASR_PYTHON 指向的解释器不存在: {candidate}")
+        return str(candidate)
     project_root = Path(__file__).resolve().parent
     candidate = (
         project_root / ".venv-asr" / "Scripts" / "python.exe"

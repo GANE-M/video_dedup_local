@@ -272,7 +272,7 @@ class GatewayDatabase:
                 """SELECT COUNT(*) AS count FROM jobs
                 WHERE access_key_id=? AND status IN (
                     'uploading','queued','starting','running','waiting_agent',
-                    'waiting_recap_agent','recap_ready','recap_rendering',
+                    'waiting_publishing_agent','waiting_recap_agent','recap_ready','recap_rendering',
                     'cancellation_requested'
                 )""",
                 (payload["access_key_id"],),
@@ -347,7 +347,7 @@ class GatewayDatabase:
                   AND uploads.status!='completed'
                   AND jobs.status IN (
                     'uploading','queued','starting','running','waiting_agent',
-                    'waiting_recap_agent','recap_ready','recap_rendering',
+                    'waiting_publishing_agent','waiting_recap_agent','recap_ready','recap_rendering',
                     'cancellation_requested'
                   )""",
                 (access_key_id,),
@@ -382,10 +382,11 @@ class GatewayDatabase:
                 counts.get(value, 0)
                 for value in (
                     "starting", "running", "waiting_agent",
-                    "waiting_recap_agent", "recap_ready", "recap_rendering",
+                    "waiting_publishing_agent", "waiting_recap_agent", "recap_ready", "recap_rendering",
                 )
             ),
             "waiting_recap_agent": counts.get("waiting_recap_agent", 0),
+            "waiting_publishing_agent": counts.get("waiting_publishing_agent", 0),
             "recap_ready": counts.get("recap_ready", 0),
             "recap_rendering": counts.get("recap_rendering", 0),
             "uploading": counts.get("uploading", 0),

@@ -14,14 +14,29 @@ param(
 $ErrorActionPreference = "Stop"
 $python = Join-Path $PSScriptRoot ".venv-ocr\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $python)) {
-    $python = "py"
-    $pythonPrefix = @("-3.12")
+    # A Git worktree intentionally does not duplicate the multi-gigabyte OCR
+    # environment. Reuse the sibling checkout runtime when it exists.
+    $sharedPython = Join-Path (Split-Path $PSScriptRoot -Parent) "video-dedup-local\.venv-ocr\Scripts\python.exe"
+    if (Test-Path -LiteralPath $sharedPython) {
+        $python = $sharedPython
+        $pythonPrefix = @()
+    } else {
+        $python = "py"
+        $pythonPrefix = @("-3.12")
+    }
 } else {
     $pythonPrefix = @()
 }
 $env:VIDEO_GATEWAY_STORAGE_ROOT = $StorageRoot
 $env:VIDEO_GATEWAY_PUBLIC_URL = $PublicUrl
 $env:VIDEO_GATEWAY_ALLOWED_ORIGINS = $AllowedOrigins
+$localAsrPython = Join-Path $PSScriptRoot ".venv-asr\Scripts\python.exe"
+$sharedAsrPython = Join-Path (Split-Path $PSScriptRoot -Parent) "video-dedup-local\.venv-asr\Scripts\python.exe"
+if (Test-Path -LiteralPath $localAsrPython) {
+    $env:VIDEO_TOOL_ASR_PYTHON = $localAsrPython
+} elseif (Test-Path -LiteralPath $sharedAsrPython) {
+    $env:VIDEO_TOOL_ASR_PYTHON = $sharedAsrPython
+}
 $serviceRoot = Join-Path $StorageRoot ".video-service"
 New-Item -ItemType Directory -Path $serviceRoot -Force | Out-Null
 $serviceLog = Join-Path $serviceRoot "gateway-service.log"

@@ -14,6 +14,8 @@ SUBTITLE_STAGE = "subtitles"
 RECAP_PLANNING_STAGE = "recap_planning"
 RECAP_RENDER_STAGE = "recap_render"
 DEDUP_STAGE = "dedup"
+PUBLISHING_PLANNING_STAGE = "publishing_planning"
+PUBLISHING_RENDER_STAGE = "publishing_render"
 
 
 @dataclass(frozen=True)
@@ -28,10 +30,14 @@ class WorkflowPlan:
         stages: list[str] = []
         if pipeline.get("enable_subtitles"):
             stages.append(SUBTITLE_STAGE)
+        if pipeline.get("enable_publishing"):
+            stages.append(PUBLISHING_PLANNING_STAGE)
         if pipeline.get("enable_recap"):
             stages.extend((RECAP_PLANNING_STAGE, RECAP_RENDER_STAGE))
         if pipeline.get("enable_dedup"):
             stages.append(DEDUP_STAGE)
+        if pipeline.get("enable_publishing"):
+            stages.append(PUBLISHING_RENDER_STAGE)
         return cls(tuple(stages))
 
     def to_dict(self) -> dict[str, Any]:

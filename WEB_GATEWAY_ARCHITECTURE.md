@@ -3,14 +3,20 @@
 > 本文描述服务器端事实。浏览器只负责上传、设置和查看自己账号的数据，
 > 不直接读取用户电脑磁盘，也不展示其他账号或整台服务器的容量。
 
-## 三类业务模块
+## 五个可检查点业务阶段
 
 - `subtitles`：软字幕/OCR/ASR、翻译、审核、字幕终稿；
+- `publishing_planning`：通用 Agent 读取可选封面/简介，提交平台证据、标题、Bio、hashtag 与封面布局；
 - `recap_planning` + `recap_render`：Agent 编排、预览、TTS、最终成片；
-- `dedup`：去重变换、字幕烧录和视频编码。
+- `dedup`：去重变换、字幕烧录和视频编码；
+- `publishing_render`：服务端按已验收方案生成 PNG 封面与三行发布文案。
 
 `web_gateway/workflows.py` 描述模块顺序和持久检查点，不包含 OCR、翻译或
 FFmpeg 业务代码。`web_gateway/worker.py` 负责组装模块并启动执行器。
+
+`PUBLISHING_JOB` 与字幕和 RECAP 契约隔离。Agent 不写主机路径、不生成任意代码，
+只提交受 schema 约束的语义方案；服务器在 `publishing_materials.py` 中确定性落盘。
+可选 PNG/TXT 缺失不会阻塞，平台标签则必须有材料证据。
 
 ## 服务器存储
 

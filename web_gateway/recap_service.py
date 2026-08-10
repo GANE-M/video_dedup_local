@@ -35,6 +35,9 @@ from .agent_orchestration import (
 )
 from .storage import JobPaths, JobStorage
 from .security import normalize_public_recap_rendering
+from .publishing_materials import build_publishing_materials
+from .publishing_service import PublishingService
+from .workflows import PUBLISHING_RENDER_STAGE, WorkflowCheckpointStore
 
 
 def safe_project_id(value: str) -> str:
@@ -58,8 +61,14 @@ def subtitle_language_code(value: str) -> str:
 class RecapService:
     """HTTP-facing adapter around the existing recap project modules."""
 
-    def __init__(self, storage: JobStorage):
+    def __init__(
+        self,
+        storage: JobStorage,
+        *,
+        publishing: PublishingService | None = None,
+    ):
         self.storage = storage
+        self.publishing = publishing or PublishingService(storage)
         self.library = VoiceLibrary()
         self._render_lock = threading.Lock()
         self._running: set[str] = set()
@@ -1380,6 +1389,21 @@ class RecapService:
                         )
                         return
                     if action == "final" and result.get("status") == "ok":
+                        pipeline = dict((job.get("settings") or {}).get("pipeline") or {})
+                        if pipeline.get("enable_publishing"):
+                            materials = build_publishing_materials(
+                                paths, self.publishing.plan(paths), recap=True
+                            )
+                            WorkflowCheckpointStore(paths).complete(
+                                PUBLISHING_RENDER_STAGE,
+                                {
+                                    "copy_file": Path(materials["copy_file"]).name,
+                                    "cover_files": [
+                                        Path(item).name
+                                        for item in materials["cover_files"]
+                                    ],
+                                },
+                            )
                         publication = self.storage.publish_results(
                             {**job, "completed_at": now_iso()},
                             paths,

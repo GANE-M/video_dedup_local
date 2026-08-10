@@ -51,10 +51,17 @@
       <summary>处理阶段（可独立或组合）</summary>
       <div class="toolbar inset">
         <label class="check"><input id="enableSubtitles" type="checkbox" checked>1. 字幕获取与翻译</label>
-        <label class="check"><input id="enableRecap" type="checkbox">2. 解说视频编排与剪辑</label>
-        <label class="check"><input id="enableDedup" type="checkbox" checked>3. 二次去重</label>
-        <span class="muted">组合顺序固定为：字幕 → 解说 → 去重</span>
+        <label class="check"><input id="enablePublishing" type="checkbox">2. Agent 封面与发布文案</label>
+        <label>文案语言<select id="publishingLanguage"><option value="auto">自动跟随成片</option><option value="English">英语</option><option value="Arabic">阿拉伯语</option></select></label>
+        <label class="check"><input id="enableRecap" type="checkbox">3. 解说视频编排与剪辑</label>
+        <label class="check"><input id="enableDedup" type="checkbox" checked>4. 二次去重</label>
+        <span class="muted">固定顺序：字幕 → 发布物料 Agent → 解说 → 去重；纯“发布物料 + 去重”可独立运行</span>
       </div>
+      <details id="agentPanel"><summary>通用 Agent 连接（字幕、发布物料、解说共用）</summary><div class="inset">
+        <div class="toolbar"><button id="webAgentInit">生成 / 显示初始化命令</button><button id="webAgentTest">测试通信</button><button id="webAgentStop">停止 Agent 监听</button><span id="webAgentStatus" class="muted">尚未检测</span></div>
+        <pre id="webAgentCommand" class="hidden"></pre>
+        <button id="webAgentCopy" class="hidden">复制初始化命令</button>
+      </div></details>
     </details>
 
     <nav class="tabs" aria-label="处理设置">
@@ -133,12 +140,6 @@
         <label>本地化策略<select id="localizationStrategy"><option value="cinematic_standard">标准影视本地化</option><option value="conversational">自然口语</option><option value="formal_faithful">忠实正式</option><option value="gulf_neutral">海湾中性口语（阿拉伯语）</option></select></label>
         <label class="check wide"><input id="reuseSubtitleCache" type="checkbox" checked>优先复用已有“字幕终稿”</label>
       </div>
-
-      <details id="agentPanel" open><summary>Agent 模式设置</summary><div class="inset">
-        <div class="toolbar"><button id="webAgentInit">生成 / 显示初始化命令</button><button id="webAgentTest">测试通信</button><button id="webAgentStop">停止 Agent 监听</button><span id="webAgentStatus" class="muted">尚未检测</span></div>
-        <pre id="webAgentCommand" class="hidden"></pre>
-        <button id="webAgentCopy" class="hidden">复制初始化命令</button>
-      </div></details>
 
       <details id="apiPanel"><summary>API模式设置</summary><div class="settings-grid inset">
         <label>LLM API Key<input id="llmApiKey" type="password" autocomplete="off"></label>
@@ -256,7 +257,7 @@
     </div>
   </section>
 
-  <section id="agentCard" class="card hidden"><h2>Agent初始化</h2><p>将下面命令粘贴到负责翻译的Codex对话；账户会话可持续领取该密钥创建的后续任务。</p><button id="copyAgent">复制命令</button><pre id="agentCommand"></pre></section>
+  <section id="agentCard" class="card hidden"><h2>通用 Agent 初始化</h2><p>将下面命令粘贴到一个 Codex 对话；同一账户会话可持续领取字幕、发布物料和解说任务。</p><button id="copyAgent">复制命令</button><pre id="agentCommand"></pre></section>
 
   <section class="card">
     <div class="section-heading"><h2>任务队列与历史</h2><button id="refreshJobs">刷新</button></div>

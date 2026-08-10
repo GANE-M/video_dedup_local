@@ -11,7 +11,7 @@ from .database import GatewayDatabase, now_iso
 from .storage import JobPaths, JobStorage
 
 
-REMOTE_LIFECYCLE = """# Remote subtitle translation and recap Agent rules
+REMOTE_LIFECYCLE = """# Remote subtitle translation, publishing-material, and recap Agent rules
 
 This is the HTTPS transport for the same subtitle contract used by the local
 video tool. Treat the job returned by the server as authoritative. Do not infer
@@ -38,7 +38,7 @@ loop until the current event reaches one of these terminal outcomes:
 
 1. Poll the supplied listen endpoint about once per minute for at most twenty
    consecutive idle minutes, until it returns
-   `JOB`, `JOB_RESUME`, `RECAP_JOB`, `RECAP_JOB_RESUME`,
+   `JOB`, `JOB_RESUME`, `PUBLISHING_JOB`, `RECAP_JOB`, `RECAP_JOB_RESUME`,
    `JOB_STATUS_NOTIFICATION`, `STOP_ALL`, or `REGISTRATION_INVALID`.
    `IDLE` only means there was no claimable OCR/ASR
    package at that poll. Count consecutive idle polls from the most recent
@@ -76,6 +76,17 @@ events, fetch and follow `rules_endpoint`, read the subtitle artifacts listed in
 the inline request, build the complete structured recap timeline, and POST it
 to the event's `submit_endpoint`. Keep sending the event's recap heartbeat while
 working. Do not send a subtitle response schema to a recap endpoint.
+
+## Generic publishing-material jobs
+
+`PUBLISHING_JOB` is an independent Agent capability. It can accompany pure
+dedup, subtitles, recap, or run by itself. Fetch its `rules_endpoint`, then
+fetch every path in `request.required_artifacts`, keep its heartbeat alive,
+and submit the exact publishing JSON to `submit_endpoint`. Do not return a
+subtitle array or recap timeline. Missing optional cover/TXT inputs are not an
+error: use the authoritative series name, do not invent a platform, and still
+produce title, Bio and hashtags. After `SUBMITTED`, continue polling; the
+server will deterministically render covers and write the paste-ready text.
 
 The remaining quality, completeness, alignment, translation, review, and
 output-schema rules below are inherited verbatim from the local bridge.

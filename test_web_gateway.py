@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import subprocess
 import sys
@@ -10,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from fastapi.testclient import TestClient
+from PIL import Image
 
 import agent_bridge
 import video_dedup
@@ -22,6 +24,7 @@ from web_gateway.agent_orchestration import (
 from web_gateway.app import create_app
 from web_gateway.database import GatewayDatabase
 from web_gateway.recap_service import RecapService
+from web_gateway.publishing_materials import TIKTOK_COPY_NAME, validate_publishing_plan
 from web_gateway.security import normalize_public_recap_rendering, validate_public_http_url
 from web_gateway.settings import GatewaySettings
 from web_gateway.storage import JobStorage, safe_component
@@ -142,6 +145,119 @@ class WebGatewayTests(unittest.TestCase):
                 },
                 final=True,
             )
+
+    def test_publishing_plan_enforces_platform_fyp_order_and_quality(self) -> None:
+        valid = {
+            "task_type": "publishing_materials",
+            "language": "English",
+            "platform": "reelshort",
+            "platform_evidence": "The uploaded cover visibly says ReelShort.",
+            "title": "A promise that changed everything",
+            "bio": "One secret forces two enemies to trust each other.",
+            "hashtags": ["#reelshort", "#fyp", "#shortdrama", "#romance", "#drama"],
+            "cover": {"episode_number_position": "bottom_right"},
+            "quality_score": 9.1,
+            "quality_notes": "Platform evidence and tag order were checked.",
+        }
+        self.assertEqual(validate_publishing_plan(valid)["hashtags"][:2], ["#reelshort", "#fyp"])
+        with self.assertRaisesRegex(ValueError, "顺序"):
+            validate_publishing_plan({**valid, "hashtags": ["#fyp", "#reelshort", "#shortdrama", "#romance", "#drama"]})
+        unknown = {**valid, "platform": None, "platform_evidence": None, "hashtags": ["#fyp", "#shortdrama", "#romance", "#drama", "#series"]}
+        self.assertEqual(validate_publishing_plan(unknown)["hashtags"][0], "#fyp")
+
+    def test_generic_publishing_agent_then_dedup_publishes_complete_processed_folder(self) -> None:
+        video = b"fake-video"
+        image_buffer = io.BytesIO()
+        Image.new("RGB", (1, 1), "navy").save(image_buffer, format="PNG")
+        cover = image_buffer.getvalue()
+        information = "The Test Drama\nA hidden promise puts an entire family at risk.".encode("utf-8")
+        declarations = [
+            ("第一集.mp4", "video", video),
+            ("封面.png", "cover", cover),
+            ("剧名简介.txt", "series_info", information),
+        ]
+        response = self.client.post(
+            "/api/v1/jobs",
+            headers=self.headers,
+            json={
+                "series_name": "The Test Drama",
+                "files": [
+                    {"name": name, "role": role, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                    for name, role, data in declarations
+                ],
+                "settings": {"pipeline": {
+                    "enable_subtitles": False,
+                    "enable_recap": False,
+                    "enable_publishing": True,
+                    "enable_dedup": True,
+                    "publishing_language": "English",
+                }},
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        created = response.json()
+        for upload, (_name, _role, data) in zip(created["uploads"], declarations, strict=True):
+            self.upload_declared(created, upload, data)
+        queued = self.client.post(f"/api/v1/jobs/{created['id']}/start", headers=self.headers)
+        self.assertEqual(queued.status_code, 200, queued.text)
+        worker = self.client.app.state.worker
+        first = self.database.claim_next_job()
+        self.assertIsNotNone(first)
+        worker._run_job(first)
+        self.assertEqual(self.database.get_job(created["id"])["status"], "waiting_publishing_agent")
+
+        bootstrap = created["agent_bootstrap"]
+        agent_headers = {"Authorization": f"Bearer {bootstrap['agent_token']}"}
+        event = self.client.post(
+            bootstrap["listen_url"].replace("https://video.example.test", ""),
+            headers=agent_headers,
+        ).json()
+        self.assertEqual(event["event"], "PUBLISHING_JOB")
+        self.assertEqual(event["request"]["required_artifacts"], [
+            "assets/cover/封面.png", "assets/series_info/剧名简介.txt",
+        ])
+        for artifact in event["request"]["required_artifacts"]:
+            fetched = self.client.get(
+                f"/api/v1/agent/jobs/{created['id']}/artifacts/{artifact}",
+                headers=agent_headers,
+            )
+            self.assertEqual(fetched.status_code, 200, fetched.text)
+        plan = {
+            "schema_version": 1,
+            "task_type": "publishing_materials",
+            "language": "English",
+            "platform": None,
+            "platform_evidence": None,
+            "title": "One promise changes everything",
+            "bio": "A dangerous family secret turns love into a fight for survival.",
+            "hashtags": ["#fyp", "#shortdrama", "#familydrama", "#romance", "#series"],
+            "cover": {"episode_number_position": "bottom_right"},
+            "quality_score": 9.2,
+            "quality_notes": "No platform was invented; output order and copy were checked.",
+        }
+        submitted = self.client.post(
+            event["submit_endpoint"].replace("https://video.example.test", ""),
+            headers=agent_headers,
+            json={"claim_id": event["claim_id"], "response": plan},
+        )
+        self.assertEqual(submitted.status_code, 200, submitted.text)
+        second = self.database.claim_next_job()
+        self.assertIsNotNone(second)
+
+        def fake_dedup(_job, paths, _settings, _stage, **_kwargs):
+            (paths.videos / "第一集_local.mp4").write_bytes(b"deduped-video")
+            return True
+
+        with mock.patch.object(worker, "_run_batch_process", side_effect=fake_dedup):
+            worker._run_job(second)
+        completed = self.database.get_job(created["id"])
+        self.assertEqual(completed["status"], "completed")
+        project = JobStorage(self.settings).project_paths(JobStorage(self.settings).paths_from_job(completed))
+        self.assertTrue((project.processed / "第一集_local.mp4").is_file())
+        self.assertTrue((project.processed / "第一集_local_cover.png").is_file())
+        copy_lines = (project.processed / TIKTOK_COPY_NAME).read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(copy_lines), 3)
+        self.assertTrue(copy_lines[2].startswith("#fyp "))
 
     def test_remote_security_rejects_private_llm_and_executable_rendering_fields(self) -> None:
         for url in (
@@ -773,12 +889,12 @@ class WebGatewayTests(unittest.TestCase):
         live_html = self.client.get("/")
         self.assertEqual(live_html.status_code, 200)
         self.assertIn("no-store", live_html.headers.get("cache-control", ""))
-        self.assertIn('content="20260727-30"', live_html.text)
-        self.assertIn('/static/app.js?v=20260727-30', live_html.text)
+        self.assertIn('content="20260810-01"', live_html.text)
+        self.assertIn('/static/app.js?v=20260810-01', live_html.text)
         self.assertNotIn("__WEB_BUILD_VERSION__", live_html.text)
         health = self.client.get("/health")
         self.assertEqual(health.status_code, 200)
-        self.assertEqual(health.json()["build_version"], "20260727-30")
+        self.assertEqual(health.json()["build_version"], "20260810-01")
         self.assertIn("no-store", health.headers.get("cache-control", ""))
         script = "\n".join(
             path.read_text(encoding="utf-8")
