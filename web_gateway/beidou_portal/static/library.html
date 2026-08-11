@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>成品视频库 · 北斗短剧</title>
+  <link rel="stylesheet" href="/beidou/static/styles.css">
+  <link rel="stylesheet" href="/beidou/static/library.css">
+</head>
+<body>
+  <header class="topbar library-header">
+    <div>
+      <p class="eyebrow">PROCESSED DRAMA LIBRARY</p>
+      <h1>成品视频库</h1>
+      <p class="subtitle">浏览、试看并下载已经完成处理的短剧。</p>
+    </div>
+    <div class="header-actions">
+      <nav class="product-nav" aria-label="主要功能">
+        <a href="/">处理工作台</a>
+        <a href="/beidou/">短剧下载</a>
+        <a class="active" href="/beidou/library">成品剧库</a>
+      </nav>
+      <span id="libraryCount" class="status-badge neutral"><span></span>正在扫描</span>
+    </div>
+  </header>
+
+  <main class="library-main">
+    <section class="panel library-toolbar">
+      <div class="path-row">
+        <div class="field-stack path-field">
+          <label for="libraryRoot">成品库目录</label>
+          <input id="libraryRoot" type="text" placeholder="E:\wangyang\Videos\北斗视频库">
+        </div>
+        <button id="scanButton" class="button primary">扫描 processed / process 文件夹</button>
+      </div>
+      <div class="library-filters">
+        <div class="field-stack search-field">
+          <label for="librarySearch">搜索剧名</label>
+          <input id="librarySearch" type="search" placeholder="搜索中文标题、原名、简介或平台">
+        </div>
+        <div class="field-stack">
+          <label for="audienceFilter">受众分类</label>
+          <select id="audienceFilter">
+            <option value="">全部</option><option>男频</option><option>女频</option><option>中性</option>
+          </select>
+        </div>
+        <div class="field-stack">
+          <label for="settingFilter">题材分类</label>
+          <select id="settingFilter">
+            <option value="">全部</option><option>魔幻</option><option>古装</option><option>现代</option>
+          </select>
+        </div>
+        <button id="filterButton" class="button secondary">应用筛选</button>
+      </div>
+      <p class="scope-note">优先读取主程序的 <code>processed</code>，兼容旧 <code>process</code>；发布物料和分类会同步到数据库。</p>
+    </section>
+
+    <section aria-live="polite">
+      <div id="libraryGrid" class="drama-grid">
+        <div class="library-empty">正在读取成品视频库…</div>
+      </div>
+      <div class="pagination library-pagination">
+        <button id="libraryPrev" class="icon-button" disabled>←</button>
+        <span id="libraryPageLabel">第 1 / 1 页</span>
+        <button id="libraryNext" class="icon-button" disabled>→</button>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/beidou/static/portal.js"></script>
+  <script src="/beidou/static/library.js"></script>
+</body>
+</html>

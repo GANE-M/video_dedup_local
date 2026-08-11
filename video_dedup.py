@@ -21,7 +21,8 @@ from typing import Sequence
 
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
 AUDIO_SUFFIXES = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
-INSTALL_FFMPEG = Path(r"D:\yijianmei\resources\extraResources\ffmpeg\win\bin\ffmpeg.exe")
+EFFECT_SUFFIXES = VIDEO_SUFFIXES | {".png", ".jpg", ".jpeg", ".webp"}
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 _ORIGINAL_POPEN = subprocess.Popen
 _HIDDEN_SUBPROCESS_POLICY_INSTALLED = False
 
@@ -66,6 +67,7 @@ def hidden_subprocess_kwargs() -> dict:
 @dataclass(frozen=True)
 class TransformConfig:
     crop_percent: float = 2.0
+    zoom_percent: float = 0.0
     mirror: bool = False
     speed: float = 1.0
     brightness: float = 0.01
@@ -73,24 +75,121 @@ class TransformConfig:
     saturation: float = 1.01
     color: str | None = None
     color_opacity: float = 0.0
+    # ``fade_seconds`` is retained for old JSON configs. New callers can
+    # configure the two ends independently, matching the source tool.
     fade_seconds: float = 0.0
+    fade_in_seconds: float | None = None
+    fade_out_seconds: float | None = None
     trim_start: float = 0.0
     trim_end: float = 0.0
     background_music: str | None = None
     background_music_dir: str | None = None
     music_volume: float = 0.08
     keep_audio: bool = True
-    crf: int = 15
+    crf: int = 23
     preset: str = "medium"
     audio_bitrate: str = "192k"
     hardware_acceleration: str = "nvidia"
+    blur_background: bool = False
+    blur_sigma: float = 18.0
+    foreground_scale: float = 0.96
+    output_aspect: str = "source"
+    target_fps: float = 0.0
+    border_file: str | None = None
+    enable_dynamic_effects: bool = False
+    effect_file: str | None = None
+    effect_dir: str | None = None
+    effect_random_type: bool = True
+    effect_timing: str = "random"
+    effect_frequency: float = 3.0
+    effect_duration: float = 2.5
+    effect_opacity: float = 0.12
+    effect_key_mode: str = "black"
+    effect_position: str = "full"
+    random_seed: int | None = None
+
+
+_BUNDLED_SWEEP_EFFECT = str(Path(__file__).resolve().with_name("effects") / "14_lens_flare_cc0.mp4")
+
+
+def production_strength_preset(
+    *,
+    crop: float,
+    filter_opacity: float,
+    music_volume: float,
+    zoom: float,
+    sweep_opacity: float,
+    brightness: float,
+    speed_percent: float,
+    mirror: bool = False,
+) -> TransformConfig:
+    """Build one of the four production-strength transformation presets."""
+    return TransformConfig(
+        crop_percent=crop,
+        zoom_percent=zoom,
+        mirror=mirror,
+        speed=1.0 + speed_percent / 100.0,
+        brightness=brightness / 100.0,
+        contrast=1.0,
+        saturation=1.0,
+        color="#00f9ff",
+        color_opacity=filter_opacity / 100.0,
+        music_volume=music_volume / 100.0,
+        blur_background=True,
+        blur_sigma=15.0,
+        foreground_scale=1.0 - crop / 100.0,
+        target_fps=25.0,
+        enable_dynamic_effects=True,
+        effect_file=_BUNDLED_SWEEP_EFFECT,
+        effect_random_type=False,
+        effect_timing="continuous",
+        effect_opacity=sweep_opacity / 100.0,
+        effect_key_mode="black",
+        effect_position="full",
+    )
 
 
 PRESETS = {
-    "light": TransformConfig(crop_percent=1.0, brightness=0.005, contrast=1.005, saturation=1.01),
-    "medium": TransformConfig(crop_percent=2.0, mirror=False, speed=1.015, brightness=0.01, contrast=1.02, saturation=1.03, fade_seconds=0.25),
-    "strong": TransformConfig(crop_percent=3.5, mirror=True, speed=1.03, brightness=0.02, contrast=1.04, saturation=1.06, color="#8bc34a", color_opacity=0.025, fade_seconds=0.4),
+    "custom": replace(
+        production_strength_preset(
+            crop=3, filter_opacity=20, music_volume=0, zoom=2,
+            sweep_opacity=12, brightness=12, speed_percent=4,
+        ),
+        color="#363636",
+        trim_start=0.0,
+        trim_end=2.0,
+        fade_in_seconds=0.0,
+        fade_out_seconds=2.0,
+    ),
+    "light": production_strength_preset(
+        crop=1, filter_opacity=5, music_volume=8, zoom=10,
+        sweep_opacity=4, brightness=10, speed_percent=3,
+    ),
+    "medium": production_strength_preset(
+        crop=2, filter_opacity=8, music_volume=15, zoom=15,
+        sweep_opacity=6, brightness=14, speed_percent=6,
+    ),
+    "strong": production_strength_preset(
+        crop=4, filter_opacity=10, music_volume=20, zoom=20,
+        sweep_opacity=10, brightness=16, speed_percent=10,
+    ),
+    "deep": production_strength_preset(
+        crop=6, filter_opacity=10, music_volume=20, zoom=30,
+        sweep_opacity=12, brightness=16, speed_percent=12, mirror=True,
+    ),
 }
+
+
+def configured_fades(config: TransformConfig, output_duration: float) -> tuple[float, float]:
+    """Return independently capped fade-in/out durations.
+
+    Old configuration files only contain ``fade_seconds``; in that case the
+    legacy value still applies symmetrically.
+    """
+    fade_in = config.fade_seconds if config.fade_in_seconds is None else config.fade_in_seconds
+    fade_out = config.fade_seconds if config.fade_out_seconds is None else config.fade_out_seconds
+    cap = output_duration / 3
+    return min(fade_in, cap), min(fade_out, cap)
 
 
 def find_binary(name: str, explicit: str | None = None) -> str:
@@ -102,9 +201,6 @@ def find_binary(name: str, explicit: str | None = None) -> str:
     found = shutil.which(name)
     if found:
         return found
-    candidate = INSTALL_FFMPEG.with_name(f"{name}.exe")
-    if candidate.is_file():
-        return str(candidate)
     raise FileNotFoundError(f"找不到 {name}，请安装 FFmpeg 或使用 --ffmpeg 指定路径")
 
 
@@ -184,13 +280,181 @@ def atempo_filters(speed: float) -> list[str]:
     return [f"atempo={value:.6f}" for value in values if abs(value - 1.0) > 1e-6]
 
 
+def even(value: float) -> int:
+    return max(2, int(value) // 2 * 2)
+
+
+def output_dimensions(info: dict, mode: str) -> tuple[int, int]:
+    if mode == "source":
+        return even(info["width"]), even(info["height"])
+    dimensions = {
+        "portrait": (1080, 1920),
+        "landscape": (1920, 1080),
+        "square": (1080, 1080),
+    }
+    if mode not in dimensions:
+        raise ValueError("output_aspect 必须是 source、portrait、landscape 或 square")
+    return dimensions[mode]
+
+
+def effect_candidates(config: TransformConfig) -> list[Path]:
+    candidates: list[Path] = []
+    if config.effect_file:
+        path = Path(config.effect_file).expanduser().resolve()
+        if not path.is_file():
+            raise FileNotFoundError(f"找不到特效素材: {path}")
+        if path.suffix.lower() not in EFFECT_SUFFIXES:
+            raise ValueError(f"不支持的特效素材格式: {path.suffix or '(无扩展名)'}")
+        candidates.append(path)
+    if config.effect_dir:
+        directory = Path(config.effect_dir).expanduser().resolve()
+        if not directory.is_dir():
+            raise FileNotFoundError(f"特效素材目录不存在: {directory}")
+        candidates.extend(
+            path for path in sorted(directory.rglob("*"))
+            if path.is_file() and path.suffix.lower() in EFFECT_SUFFIXES
+        )
+    # Preserve order while removing a fixed file that is also inside the folder.
+    return list(dict.fromkeys(candidates))
+
+
+def plan_effect_events(config: TransformConfig, duration: float) -> list[tuple[Path, float, float]]:
+    if not config.enable_dynamic_effects:
+        return []
+    candidates = effect_candidates(config)
+    if not candidates:
+        raise ValueError("已启用动态特效，但没有选择特效文件或包含素材的目录")
+    if config.effect_timing not in {"random", "continuous"}:
+        raise ValueError("effect_timing 必须是 random 或 continuous")
+    if config.effect_frequency <= 0:
+        raise ValueError("effect_frequency 必须大于 0")
+    if config.effect_duration <= 0:
+        raise ValueError("effect_duration 必须大于 0")
+    rng = random.Random(config.random_seed)
+    if config.effect_timing == "continuous":
+        selected = rng.choice(candidates) if config.effect_random_type else candidates[0]
+        return [(selected, 0.0, max(0.01, duration))]
+
+    count = max(1, min(20, int(duration / 60.0 * config.effect_frequency + 0.999999)))
+    event_duration = min(config.effect_duration, max(0.01, duration))
+    slot = duration / count
+    events: list[tuple[Path, float, float]] = []
+    for index in range(count):
+        earliest = index * slot
+        latest = min(duration - event_duration, (index + 1) * slot - event_duration)
+        start = earliest if latest <= earliest else rng.uniform(earliest, latest)
+        selected = rng.choice(candidates) if config.effect_random_type else candidates[0]
+        events.append((selected, max(0.0, start), event_duration))
+    return events
+
+
+def add_looping_input(command: list[str], path: Path) -> None:
+    if path.suffix.lower() in IMAGE_SUFFIXES:
+        command += ["-loop", "1", "-i", str(path)]
+    else:
+        command += ["-stream_loop", "-1", "-i", str(path)]
+
+
+def spatial_video_filters(
+    info: dict, config: TransformConfig, *, restore_canvas: bool = True,
+) -> list[str]:
+    filters: list[str] = []
+    if config.zoom_percent:
+        zoom = 1.0 + config.zoom_percent / 100.0
+        filters.append(
+            f"scale={even(info['width'] * zoom)}:{even(info['height'] * zoom)}:flags=lanczos"
+        )
+    if config.crop_percent and config.zoom_percent:
+        # Match the observed preset structure: enlarge the source, then crop
+        # a slightly smaller centered foreground before restoring canvas size.
+        ratio = 1 - config.crop_percent / 100.0
+        filters.append(
+            f"crop={even(info['width'] * ratio)}:{even(info['height'] * ratio)}:(iw-ow)/2:(ih-oh)/2"
+        )
+        if restore_canvas:
+            filters += [f"scale={info['width']}:{info['height']}:flags=lanczos", "setsar=1"]
+    elif config.crop_percent:
+        ratio = 1 - config.crop_percent / 100.0 * 2
+        filters.append(f"crop=trunc(iw*{ratio:.6f}/2)*2:trunc(ih*{ratio:.6f}/2)*2")
+        if restore_canvas:
+            filters += [f"scale={info['width']}:{info['height']}:flags=lanczos", "setsar=1"]
+    return filters
+
+
+def global_video_filters(config: TransformConfig) -> list[str]:
+    filters: list[str] = []
+    if abs(config.speed - 1.0) > 1e-6:
+        filters.append(f"setpts=PTS/{config.speed:.6f}")
+    filters.append(
+        f"eq=brightness={config.brightness:.4f}:contrast={config.contrast:.4f}:"
+        f"saturation={config.saturation:.4f}"
+    )
+    if config.mirror:
+        filters.append("hflip")
+    if config.color and config.color_opacity > 0:
+        color = config.color.replace("#", "0x")
+        filters.append(f"drawbox=x=0:y=0:w=iw:h=ih:color={color}@{config.color_opacity:.4f}:t=fill")
+    return filters
+
+
+def base_video_filters(info: dict, config: TransformConfig) -> list[str]:
+    return spatial_video_filters(info, config) + global_video_filters(config)
+
+
+def effect_input_filter(
+    input_index: int,
+    label: str,
+    width: int,
+    height: int,
+    start: float,
+    duration: float,
+    config: TransformConfig,
+) -> str:
+    if config.effect_position == "full":
+        scale = (
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black@0"
+        )
+    elif config.effect_position in {"top", "bottom"}:
+        scale = f"scale={width}:-2:force_original_aspect_ratio=decrease"
+    else:
+        raise ValueError("effect_position 必须是 full、top 或 bottom")
+    key_filter = {
+        "black": "colorkey=0x000000:0.18:0.10",
+        "green": "chromakey=0x00FF00:0.18:0.08",
+        "alpha": "null",
+    }.get(config.effect_key_mode)
+    if key_filter is None:
+        raise ValueError("effect_key_mode 必须是 black、green 或 alpha")
+    return (
+        f"[{input_index}:v]trim=duration={duration:.3f},setpts=PTS-STARTPTS+{start:.3f}/TB,"
+        f"{scale},format=rgba,{key_filter},colorchannelmixer=aa={config.effect_opacity:.4f}[{label}]"
+    )
+
+
 def build_command(input_path: Path, output_path: Path, info: dict, config: TransformConfig, ffmpeg: str) -> list[str]:
     if not 0 <= config.crop_percent < 45:
         raise ValueError("crop_percent 必须在 0 到 45 之间")
+    if not 0 <= config.zoom_percent <= 100:
+        raise ValueError("zoom_percent 必须在 0 到 100 之间")
     if not 0.25 <= config.speed <= 4.0:
         raise ValueError("speed 必须在 0.25 到 4.0 之间")
+    if config.fade_seconds < 0 or any(
+        value is not None and value < 0
+        for value in (config.fade_in_seconds, config.fade_out_seconds)
+    ):
+        raise ValueError("fade durations cannot be negative")
     if config.trim_start + config.trim_end >= info["duration"]:
         raise ValueError("首尾裁剪时长超过视频总时长")
+
+    if not 0 <= config.effect_opacity <= 1:
+        raise ValueError("effect_opacity 必须在 0 到 1 之间")
+    if not 0 < config.foreground_scale <= 1:
+        raise ValueError("foreground_scale 必须在 0 到 1 之间")
+    if config.blur_sigma < 0:
+        raise ValueError("blur_sigma 不能小于 0")
+    if config.target_fps < 0:
+        raise ValueError("target_fps 不能小于 0")
 
     command = [ffmpeg, "-hide_banner", "-y"]
     if config.trim_start:
@@ -198,48 +462,159 @@ def build_command(input_path: Path, output_path: Path, info: dict, config: Trans
     command += ["-i", str(input_path)]
 
     music = Path(config.background_music).resolve() if config.background_music else None
+    input_indexes: dict[str, int] = {}
+    next_input_index = 1
     if music:
         if not music.is_file():
             raise FileNotFoundError(f"找不到背景音乐: {music}")
         command += ["-stream_loop", "-1", "-i", str(music)]
+        input_indexes["music"] = next_input_index
+        next_input_index += 1
 
-    output_duration = max(0.01, (info["duration"] - config.trim_start - config.trim_end) / config.speed)
-    vf: list[str] = []
-    if config.crop_percent:
-        ratio = 1 - config.crop_percent / 100.0 * 2
-        vf += [
-            f"crop=trunc(iw*{ratio:.6f}/2)*2:trunc(ih*{ratio:.6f}/2)*2",
-            f"scale={info['width']}:{info['height']}:flags=lanczos",
-            "setsar=1",
-        ]
-    if config.mirror:
-        vf.append("hflip")
-    vf.append(f"eq=brightness={config.brightness:.4f}:contrast={config.contrast:.4f}:saturation={config.saturation:.4f}")
-    if config.color and config.color_opacity > 0:
-        color = config.color.replace("#", "0x")
-        vf.append(f"drawbox=x=0:y=0:w=iw:h=ih:color={color}@{config.color_opacity:.4f}:t=fill")
-    if abs(config.speed - 1.0) > 1e-6:
-        vf.append(f"setpts=PTS/{config.speed:.6f}")
-    if config.fade_seconds:
-        fade = min(config.fade_seconds, output_duration / 3)
-        vf += [f"fade=t=in:st=0:d={fade:.3f}", f"fade=t=out:st={max(0, output_duration-fade):.3f}:d={fade:.3f}"]
-    command += ["-vf", ",".join(vf)]
+    source_duration = max(0.01, info["duration"] - config.trim_start - config.trim_end)
+    output_duration = max(0.01, source_duration / config.speed)
+    fade_in, fade_out = configured_fades(config, output_duration)
+    width, height = output_dimensions(info, config.output_aspect)
+    # Blur/PiP follows the observed source order: compose the effect first,
+    # then speed up the whole picture. Its event timeline is therefore still
+    # in source time here; other paths already apply speed before overlays.
+    effect_duration = source_duration if config.blur_background else output_duration
+    effect_events = plan_effect_events(config, effect_duration)
+    effect_inputs: list[tuple[int, Path, float, float]] = []
+    for path, start, duration in effect_events:
+        add_looping_input(command, path)
+        effect_inputs.append((next_input_index, path, start, duration))
+        next_input_index += 1
+
+    border = Path(config.border_file).expanduser().resolve() if config.border_file else None
+    if border:
+        if not border.is_file():
+            raise FileNotFoundError(f"找不到边框素材: {border}")
+        if border.suffix.lower() not in EFFECT_SUFFIXES:
+            raise ValueError(f"不支持的边框素材格式: {border.suffix or '(无扩展名)'}")
+        add_looping_input(command, border)
+        input_indexes["border"] = next_input_index
+        next_input_index += 1
+
+    advanced_video = bool(
+        config.blur_background
+        or config.output_aspect != "source"
+        or effect_inputs
+        or border
+    )
+    linear_video_filters = base_video_filters(info, config)
 
     has_source_audio = info["has_audio"] and config.keep_audio
     audio_filters = atempo_filters(config.speed)
-    if config.fade_seconds:
-        fade = min(config.fade_seconds, output_duration / 3)
-        audio_filters += [f"afade=t=in:st=0:d={fade:.3f}", f"afade=t=out:st={max(0, output_duration-fade):.3f}:d={fade:.3f}"]
+    if fade_in:
+        audio_filters.append(f"afade=t=in:st=0:d={fade_in:.3f}")
+    if fade_out:
+        audio_filters.append(
+            f"afade=t=out:st={max(0, output_duration-fade_out):.3f}:d={fade_out:.3f}"
+        )
 
-    if music and has_source_audio:
-        source_chain = ",".join(audio_filters) if audio_filters else "anull"
-        command += ["-filter_complex", f"[0:a]{source_chain}[a0];[1:a]volume={config.music_volume:.4f}[bg];[a0][bg]amix=inputs=2:duration=first:dropout_transition=2[a]", "-map", "0:v:0", "-map", "[a]"]
-    elif music:
-        command += ["-filter_complex", f"[1:a]volume={config.music_volume:.4f}[a]", "-map", "0:v:0", "-map", "[a]"]
-    elif has_source_audio and audio_filters:
-        command += ["-af", ",".join(audio_filters)]
-    elif not has_source_audio:
-        command += ["-an"]
+    if advanced_video:
+        graph: list[str] = []
+        if config.blur_background:
+            foreground_width = even(width * config.foreground_scale)
+            foreground_height = even(height * config.foreground_scale)
+            foreground_filters = spatial_video_filters(info, config, restore_canvas=False)
+            foreground_chain = ",".join(foreground_filters)
+            if foreground_chain:
+                foreground_chain += ","
+            graph += [
+                "[0:v]split=2[bgsrc][fgsrc]",
+                f"[bgsrc]scale={width}:{height}:force_original_aspect_ratio=increase,"
+                f"crop={width}:{height},gblur=sigma={config.blur_sigma:.3f}[bg]",
+                f"[fgsrc]{foreground_chain}"
+                f"scale={foreground_width}:{foreground_height}:force_original_aspect_ratio=decrease[fg]",
+                "[bg][fg]overlay=(W-w)/2:(H-h)/2:format=auto[vbase]",
+            ]
+        else:
+            graph.append(
+                f"[0:v]{','.join(linear_video_filters)},"
+                f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+                f"crop={width}:{height}[vbase]"
+            )
+
+        current_video = "vbase"
+        for event_index, (input_index, _path, start, duration) in enumerate(effect_inputs):
+            effect_label = f"effect{event_index}"
+            next_video = f"veffect{event_index}"
+            graph.append(
+                effect_input_filter(input_index, effect_label, width, height, start, duration, config)
+            )
+            y = "0" if config.effect_position != "bottom" else "H-h"
+            graph.append(
+                f"[{current_video}][{effect_label}]overlay=x=(W-w)/2:y={y}:eof_action=pass:shortest=0:"
+                f"format=auto:enable='between(t,{start:.3f},{start + duration:.3f})'[{next_video}]"
+            )
+            current_video = next_video
+
+        if border:
+            border_index = input_indexes["border"]
+            graph += [
+                f"[{border_index}:v]scale={width}:{height},format=rgba[border]",
+                f"[{current_video}][border]overlay=0:0:eof_action=repeat:shortest=0:format=auto[vborder]",
+            ]
+            current_video = "vborder"
+
+        # The observed source pipeline applies mirror, speed, brightness and
+        # tint after composing the blurred background, foreground and sweep.
+        final_filters: list[str] = global_video_filters(config) if config.blur_background else []
+        if fade_in:
+            final_filters.append(f"fade=t=in:st=0:d={fade_in:.3f}")
+        if fade_out:
+            final_filters.append(
+                f"fade=t=out:st={max(0, output_duration-fade_out):.3f}:d={fade_out:.3f}"
+            )
+        if config.target_fps > 0:
+            final_filters.append(f"fps={config.target_fps:.3f}:round=up")
+        final_filters += ["setsar=1", "format=yuv420p"]
+        graph.append(f"[{current_video}]{','.join(final_filters)}[vout]")
+
+        if music and has_source_audio:
+            source_chain = ",".join(audio_filters) if audio_filters else "anull"
+            graph += [
+                f"[0:a]{source_chain}[a0]",
+                f"[{input_indexes['music']}:a]volume={config.music_volume:.4f}[bgmusic]",
+                "[a0][bgmusic]amix=inputs=2:duration=first:dropout_transition=2[aout]",
+            ]
+            audio_map = "[aout]"
+        elif music:
+            graph.append(f"[{input_indexes['music']}:a]volume={config.music_volume:.4f}[aout]")
+            audio_map = "[aout]"
+        elif has_source_audio and audio_filters:
+            graph.append(f"[0:a]{','.join(audio_filters)}[aout]")
+            audio_map = "[aout]"
+        elif has_source_audio:
+            audio_map = "0:a:0"
+        else:
+            audio_map = None
+        command += ["-filter_complex", ";".join(graph), "-map", "[vout]"]
+        if audio_map:
+            command += ["-map", audio_map]
+        else:
+            command += ["-an"]
+    else:
+        if fade_in:
+            linear_video_filters.append(f"fade=t=in:st=0:d={fade_in:.3f}")
+        if fade_out:
+            linear_video_filters.append(
+                f"fade=t=out:st={max(0, output_duration-fade_out):.3f}:d={fade_out:.3f}"
+            )
+        if config.target_fps > 0:
+            linear_video_filters.append(f"fps={config.target_fps:.3f}:round=up")
+        command += ["-vf", ",".join(linear_video_filters)]
+        if music and has_source_audio:
+            source_chain = ",".join(audio_filters) if audio_filters else "anull"
+            command += ["-filter_complex", f"[0:a]{source_chain}[a0];[1:a]volume={config.music_volume:.4f}[bg];[a0][bg]amix=inputs=2:duration=first:dropout_transition=2[a]", "-map", "0:v:0", "-map", "[a]"]
+        elif music:
+            command += ["-filter_complex", f"[1:a]volume={config.music_volume:.4f}[a]", "-map", "0:v:0", "-map", "[a]"]
+        elif has_source_audio and audio_filters:
+            command += ["-af", ",".join(audio_filters)]
+        elif not has_source_audio:
+            command += ["-an"]
 
     command += ["-t", f"{output_duration:.3f}"]
     if config.hardware_acceleration == "nvidia":
@@ -277,6 +652,7 @@ def load_config(preset: str, config_file: str | None, seed: int | None) -> Trans
             crop_percent=max(0, config.crop_percent + rng.uniform(-0.35, 0.35)),
             speed=max(0.25, config.speed + rng.uniform(-0.004, 0.004)),
             brightness=config.brightness + rng.uniform(-0.003, 0.003),
+            random_seed=seed,
         )
     return config
 
@@ -351,10 +727,23 @@ def process(args: argparse.Namespace) -> int:
             per_file = replace(per_file, hardware_acceleration=resolved_acceleration)
         music_seed = (args.seed + index - 1) if args.seed is not None else None
         per_file = choose_background_music(per_file, music_seed)
+        if per_file.random_seed is None:
+            per_file = replace(per_file, random_seed=random.SystemRandom().randrange(0, 2**31))
         command = build_command(source, target, info, per_file, ffmpeg)
         print(f"[{index}/{len(inputs)}] {source.name} -> {target.name}")
         if per_file.background_music:
             print(f"  背景音乐: {Path(per_file.background_music).name}")
+        if per_file.blur_background:
+            print(
+                f"  模糊画中画: sigma={per_file.blur_sigma:g}, "
+                f"主体比例={per_file.foreground_scale:.0%}, 画幅={per_file.output_aspect}"
+            )
+        if per_file.enable_dynamic_effects:
+            events = plan_effect_events(per_file, max(0.01, (info["duration"] - per_file.trim_start - per_file.trim_end) / per_file.speed))
+            names = ", ".join(dict.fromkeys(path.name for path, _start, _duration in events))
+            print(f"  动态特效: {len(events)} 次，素材={names}")
+        if per_file.border_file:
+            print(f"  视频边框: {Path(per_file.border_file).name}")
         if args.dry_run:
             print(subprocess.list2cmdline(command))
         else:
@@ -373,7 +762,7 @@ def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="完全本地的批量视频变换工具")
     parser.add_argument("input", help="输入视频或视频目录")
     parser.add_argument("output", help="输出视频或输出目录")
-    parser.add_argument("--preset", choices=PRESETS, default="medium", help="变换强度")
+    parser.add_argument("--preset", choices=PRESETS, default="custom", help="变换强度")
     parser.add_argument("--config", help="JSON 自定义配置；覆盖预设参数")
     parser.add_argument("--seed", type=int, help="加入可复现的轻微随机变化")
     parser.add_argument("--ffmpeg", help="ffmpeg 可执行文件路径")

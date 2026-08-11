@@ -1,240 +1,247 @@
-# 本地视频变换工具
+# 本地短剧智能制作平台
 
-这是从“易剪媒”的参数设计中重新实现的独立本地版本。它不调用易剪媒服务器，不需要登录或会员，FFmpeg 命令全部在本机生成。
+面向短剧批量生产的一体化本地工具，覆盖四条可独立运行、也可自由组合的流水线：
 
-> 仅用于自己拥有或获准修改的视频。修改编码或画面不改变素材的版权归属，也不保证任何平台的审核或推荐结果。
+1. 字幕获取与翻译：软字幕、画面 OCR、Whisper ASR、双源对齐、LLM 或 Codex Agent 翻译与审核。
+2. 解说视频编排与剪辑：剧情分析、解说文案、片段时间轴、TTS、预览、校验和最终渲染。
+3. Agent 发布物料与分类：读取下载器 MD/TXT 与封面，生成标题、Bio、hashtag、中文展示信息、剧集分类和分集封面方案。
+4. 视频画面增强：裁剪、画中画、模糊背景、滤镜、变速、动态特效、背景音乐和硬件编码。
 
-## 图形界面
+项目同时提供 Windows 桌面 GUI、命令行工具和可远程访问的 Web Gateway。所有视频处理均由本机 FFmpeg 与本地模型执行；请只处理自己拥有或获准修改的素材。
 
-双击 `start_gui.bat` 即可启动。界面支持任意多选视频或直接选择整个目录进行批量处理；也可以选择输出和背景音乐，并调整画面、时间、声音与输出质量参数。配置可以保存为 JSON 后重复使用。
+## 主要能力
 
-界面顶部的“并行任务”控制每个目录内部同时处理的视频数量和 GUI 同时运行的任务组数量，默认且最多为 5。“一个目录/一组多选文件”仍是一个独立任务窗口，但目录内的视频会并发处理。ASR 和 LLM 请求分别使用跨进程、跨文件夹的全局 5 槽位，避免多个任务叠加成 25 路请求。每次点击“开始处理”都会弹出新的任务进度窗口，主窗口可以继续启动下一个目录。500 条以内的单个视频字幕通常整段发送给 AI；超过 500 条时按每 500 条分批发送。初译采用稳定索引对象，模型若漏项会在当前任务内只补发缺失索引，不产生断点缓存文件。
+### 字幕
 
-目录任务的完整流水线顺序是“并发字幕提取与初译 → 每集完整语义审核 → 全剧实体一致性审核 → 并发视频去重与字幕写入”。字幕会先从原始视频中提取/识别并翻译，待同一目录全部视频准备完毕后统一人物、家族、地点和称谓，再根据裁剪、变速参数校正时间轴并写入成片，避免去重变换影响字幕识别或导致字幕偏移。
+- 自动选择软字幕、硬字幕 OCR 或语音 ASR，也可指定固定来源。
+- OCR 与 ASR 可并行提取，按时间轴对齐后交给翻译与审核流程。
+- 支持中文、英文、阿拉伯语等源语言与目标语言。
+- 支持 API 模式与 Agent 文件桥接模式。
+- 支持快速翻译和高级翻译，以及按题材加载 `glossaries/` 术语表。
+- 支持双语字幕、覆盖原字幕、动态模糊遮罩、字体和字幕区域预览。
+- 终稿保存在源工程目录的 `字幕终稿/`，原文与译文各保留一份标准 SRT。
 
-## 快速使用
+### 解说剪辑
 
-电脑已安装易剪媒时，程序会自动找到它附带的 FFmpeg。也可以安装自己的 FFmpeg，或者通过参数指定路径。
+- 结构化 `recap_plan` 管理剧集、源区间、解说正文和成片时间轴。
+- 分阶段 Agent 流程：剧情分析、初稿、独立审核、最终修订、最终验证。
+- 服务端校验阶段令牌、制品哈希、读取记录和隔离审核上下文。
+- 英语和阿拉伯语使用独立的模型路由与声纹库。
+- 支持 Fish Speech S2、Chatterbox Multilingual 和兼容的英文 TTS 路由。
+- 支持固定声纹试听、语速预算、响度策略、局部渲染、预览与最终成片。
+- 成片发布到源工程目录的 `解说/`。
 
-处理一个视频：
+解说规则分别位于：
+
+- [CODEX_RECAP_INIT.md](CODEX_RECAP_INIT.md)：Agent 初始化与通信协议。
+- [RECAP_EDITOR_PLAYBOOK.md](RECAP_EDITOR_PLAYBOOK.md)：剧情理解和创作规范。
+- [RECAP_ENGINE_IMPLEMENTATION.md](RECAP_ENGINE_IMPLEMENTATION.md)：运行时契约与实现边界。
+
+### 画面增强与批处理
+
+- 单文件、多个文件或目录第一层视频批处理。
+- `custom`（自定义默认）、`light`、`medium`、`strong`、`deep` 五档强度预设，也可完全自定义。
+- NVIDIA NVENC、AMD AMF、Intel QSV、Apple VideoToolbox 和 CPU 编码。
+- 模糊背景画中画、比例标准化、固定帧率、镜像、亮度、缩放和变速。
+- 动态扫光、星光、飞雪、流星、烟花等素材，可随机出现或全程循环。
+- CRF 默认 23；数值越低质量越高、文件也越大。
+
+### Agent 发布物料
+
+- 这是字幕、解说之外的通用 Agent 能力，可与纯去重直接组合。
+- 工程根目录第一层可放一个 PNG/JPG/WebP 原始封面和一个 MD/TXT 剧名简介；缺失时不阻塞任务。
+- 下载器 MD/TXT 是剧名、简介、语言和归属平台的权威来源；阿语元数据生成阿语文案，英语元数据生成英语文案。
+- Agent 只负责语义内容和封面安全位置，服务器用 Pillow 确定性生成金色分集数字封面。
+- 平台有可靠证据时 hashtag 顺序为 `#平台 #fyp ...`；无法确认平台时以 `#fyp` 开头，绝不猜测平台。
+- `bio.txt` 固定四行：本剧 AI 生成状态、标题、Bio、空格分隔的 5-7 个 hashtag。
+- `publishing_metadata.json` 保存中文标题/简介、`男频|女频|中性`、`魔幻|现代|古装`、分类置信度与依据，作为后续数据库导入契约。
+- “Agent 发布物料 + 二次去重”完成后，视频、对应封面和发布文案统一位于 `processed/`。
+- 只勾“视频画面增强/二次去重”不会调用 Agent；发布物料是独立勾选能力，不需要单独页面。
+
+## 流水线组合
+
+GUI 和 Web 页面都可勾选一个或多个阶段。组合顺序固定为：
+
+```text
+字幕获取与翻译 -> Agent发布物料 -> 解说视频编排与剪辑 -> 画面增强
+```
+
+只启用字幕时不会重编码视频；只启用画面增强时不会调用 OCR、ASR、LLM 或 Agent。发布物料阶段不会运行 OCR/ASR，也不修改视频；它等待 Agent 方案通过后再由服务器渲染。已完成阶段会写入任务清单，可在中断后从最近的有效检查点继续。
+
+## 目录约定
+
+用户选取的视频源文件夹就是工程根目录。平台不会把代码目录当成成品目录。
+
+```text
+剧名/
+├─ 原始视频.mp4
+├─ cover.webp               # 可选，也支持 PNG/JPG
+├─ 剧名.md                  # 可选，也支持 TXT
+├─ 字幕终稿/
+│  ├─ 原始视频.source.<语言>.srt
+│  ├─ 原始视频.final.<语言>.srt
+│  └─ manifest.json
+├─ processed/
+│  ├─ <去重成片>.mp4
+│  ├─ <去重成片>_cover.png
+│  ├─ bio.txt
+│  └─ publishing_metadata.json
+├─ 解说/
+└─ 任务记录/
+   └─ <任务名_时间_job短ID>/
+      ├─ logs/
+      ├─ agent/
+      └─ manifest.json
+```
+
+Web 上传的临时数据位于服务器配置的 `.video-service/jobs/<job-id>/`，发布完成后按上面的工程结构归档。API 返回逻辑目录名，不泄露服务器绝对路径。
+
+## 环境要求
+
+- Windows 10/11；核心命令行也支持 macOS 和 Linux。
+- Python 3.12 推荐。
+- FFmpeg 与 FFprobe 可在 `PATH` 中找到，或由本地 GUI 显式指定。
+- NVIDIA GPU 推荐用于 OCR、Whisper、TTS 和 NVENC 编码。
+
+安装基础开发依赖：
 
 ```powershell
-python .\video_dedup.py "D:\video\input.mp4" "D:\video\output.mp4"
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 ```
 
-也可以使用 PowerShell 包装入口：
+字幕与 ASR 环境可使用：
 
 ```powershell
-.\run.ps1 "D:\video\input.mp4" "D:\video\output.mp4" -Preset medium
+.\setup_asr_windows.ps1
 ```
 
-批量处理目录：
+不同 PaddlePaddle CUDA 版本应按照本机驱动和 Paddle 官方安装源选择，不要与系统 Python 3.14 混装。
+
+## 启动桌面端
 
 ```powershell
-python .\video_dedup.py "D:\video\inputs" "D:\video\outputs" --preset medium --seed 2026
+.\start_gui.bat
 ```
 
-查看命令但不执行：
+每次开始目录任务都会打开独立进度窗口；主窗口可以继续提交其他目录。GUI 会记忆字幕区域、字体、蒙版、硬件编码和输出质量等常用设置。
+
+## 命令行
+
+单视频画面处理：
 
 ```powershell
-python .\video_dedup.py input.mp4 output.mp4 --dry-run
+py -3.12 .\video_dedup.py input.mp4 output.mp4 --preset custom
 ```
 
-## 预设
-
-- `light`：轻微裁边和色彩调整。
-- `medium`：默认不镜像，使用轻微变速和淡入淡出。
-- `strong`：更明显的裁边、色彩叠加和速度变化。
-
-## GPU 加速
-
-界面的“输出质量”页可选择 `auto / nvidia / amd / intel / apple / cpu`。默认 `nvidia` 会直接使用 NVIDIA NVENC；Mac 选择 `apple` 使用 VideoToolbox；选择 `auto` 时会自动检测可用硬件编码器。画面滤镜仍可能在 CPU 执行，最终视频编码优先由 GPU/硬件编码器完成。
-
-## 字幕处理
-
-每次启用字幕流水线时，程序会在 `logs/translation-records/<运行时间-进程号>/` 下为每个视频保存一份 UTF-8 JSON 诊断记录，并额外保存 `series-consistency.json`。记录包含 OCR/软字幕原文、ASR 原文、清洗文本、置信分、初译、整集审核报告、终稿、全剧实体统一决策及失败信息，不包含 API Key。记录采用阶段性原子写入，因此翻译或后续编码中途失败时也能保留已经完成的分析数据。可用 `--translation-log-dir` 改变记录根目录。
-
-题材术语表默认放在项目根目录的 `glossaries/`。GUI 会扫描其中除 `template_*.json` 外的 JSON 文件，并在目标语言旁提供手动选择和刷新按钮；默认不使用术语表。选中的术语表会同时注入初译和整集审核 Prompt，并写入翻译诊断记录。当前内置 `chinese_history_zh_en_ar.json`（中国历史/古装，中英阿三语），可复制模板继续增加现代商战、医疗、法律等题材。命令行可使用 `--glossary-file <json路径>`；Docker GUI 会把所选文件临时映射进容器，无需重新构建镜像。
-
-界面新增“字幕”页，支持自动字幕流水线：
-
-- 自动检测视频是否有软字幕轨道。
-- 默认按硬字幕短剧处理：用 PaddleOCR 识别画面硬字幕；也可选择“自动：软字幕→硬字幕OCR”优先利用软字幕轨道。只有手动选择“语音识别”或“三段自动兜底”时才会使用 Faster-Whisper。
-- 自动调用 OpenAI-compatible LLM 接口翻译字幕。
-- 自动将翻译字幕封装为软字幕，或烧录到画面；GUI 不需要手动选择/导出字幕文件。
-- 原字幕语言可选择“自动/中文/英语/阿拉伯语”；翻译源语言也可单独选择，默认自动交给 LLM 判断。
-- 阿拉伯语硬字幕会使用 EasyOCR；中文/英文默认使用 PaddleOCR。
-- 两种烧录形式：
-  - `双语字幕`：不遮住原字幕，新字幕自动放在顶部，避免贴着旧字幕导致换行重叠。
-  - `覆盖原字幕`：优先用 OCR 自动识别原字幕区域，再用白色半透明蒙版遮住旧字幕并叠加新字幕；OCR 不可用或识别失败时回退到手动百分比参数。
-- 字幕页支持滚动，并提供可折叠的“字幕区域预览”：可用当前第一个视频或手动选择视频随机抽帧，用滑块或拖动画面方框校准白色蒙版位置。
-
-GUI 里需要填写 API Key、接口地址和模型名。DeepSeek/OpenAI-compatible 接口均可；如果使用 DeepSeek V4 Flash，请把模型名填成 DeepSeek 后台显示的准确模型 ID。
-
-完整单视频流水线命令也可单独使用：
+完整目录流水线：
 
 ```powershell
-python .\batch_pipeline.py "D:\video\input.mp4" "D:\video\output.mp4" --preset medium --config .\config.example.json --enable-subtitles --subtitle-source hard-ocr --target-language English --llm-model deepseek-v4-flash --subtitle-layout replace --subtitle-cover
+py -3.12 .\batch_pipeline.py input_dir output_dir --config config.local.json --preset custom
 ```
 
-硬字幕视频也可用 PaddleOCR 估计遮盖区域。GUI 中“自动识别原字幕区域”默认开启；如果未安装 PaddleOCR，会自动使用手动遮盖起点/高度。
-
-命令行也可单独使用：
+解说项目：
 
 ```powershell
-python .\subtitle_tool.py detect "D:\video\input.mp4"
-python .\subtitle_tool.py extract "D:\video\input.mp4" "D:\video\input.srt"
-python .\subtitle_tool.py hard-ocr "D:\video\input.mp4" "D:\video\input_ocr.srt"
-python .\subtitle_tool.py translate "D:\video\input.srt" "D:\video\input_en.srt" --provider none
-python .\subtitle_tool.py render "D:\video\input.mp4" "D:\video\input_en.srt" "D:\video\output_bilingual.mp4" --mode burn --layout bilingual
-python .\subtitle_tool.py render "D:\video\input.mp4" "D:\video\input_en.srt" "D:\video\output_replace.mp4" --mode burn --layout replace --cover --cover-auto-detect --cover-color white
+py -3.12 .\recap_cli.py --help
 ```
 
-`--provider none` 不联网，只复制字幕文件，适合先手动编辑。若要自动翻译，可设置 `OPENAI_API_KEY`，并使用：
+配置示例见 [config.example.json](config.example.json) 和 [recap/examples/project.example.json](recap/examples/project.example.json)。
+
+## Web Gateway
+
+安装并启动：
 
 ```powershell
-python .\subtitle_tool.py translate "D:\video\input.srt" "D:\video\input_en.srt" --provider openai-compatible --target-language English
+py -3.12 -m pip install -r requirements-web.txt
+.\start_web_gateway.ps1
 ```
 
-LLM 翻译默认按视频整段发送；当单个视频超过 500 条字幕时，自动按每 500 条分批发送。`--parallel-batches` 仅为兼容旧命令保留：
+默认仅应监听本机或受保护的反向代理。远程部署建议使用 HTTPS Tunnel，并为每个用户创建独立访问密钥。
+
+主工作台右上角同时提供两个同源页面：
+
+- `/beidou/`：北斗授权短剧下载中心，保留分集断点、失败重试、封面/MD 与 CPS 下载能力；
+- `/beidou/library`：成品剧库，优先扫描 `processed/`，兼容旧 `process/`，可试看、下载和人工修正两级分类。
+
+两个页面不再需要独立启动 8767 端口，所有 API 复用主程序访问密钥。默认复用相邻
+`inbeidou-downloader/data/downloads.db` 的历史数据；不存在旧工程时改用服务目录。数据库迁移是幂等的，
+现有 `dramas`/`episodes` 记录不会丢失。扫描成品时会把 `publishing_metadata.json` 中的源语言、平台、
+AI 状态、发布标题/Bio/hashtag、中文标题/Bio、两级分类、置信度和依据写入 `processed_library`，供后续平台数据库直接导入。
+
+服务端具有以下边界：
+
+- 用户、任务、工程目录和发布制品隔离。
+- 分片 SHA-256、单文件/单任务/账户容量限制、上传速率限制和磁盘余量检查。
+- 远程配置只允许公开的渲染参数，不能指定 Python、FFmpeg、模型或任意可执行路径。
+- API 模式拒绝回环、内网和保留地址的 LLM URL，并禁止跟随重定向。
+- Agent 制品采用流式文件响应，避免大字幕或审核材料一次性载入服务进程内存。
+- 任务取消会终止经过 PID、启动时间和可执行文件三重匹配的进程树，避免误杀复用 PID。
+
+容量可通过环境变量调整：
+
+```text
+VIDEO_GATEWAY_MAX_FILE_SIZE
+VIDEO_GATEWAY_MAX_JOB_UPLOAD_SIZE
+VIDEO_GATEWAY_MAX_ACCOUNT_STORAGE
+VIDEO_GATEWAY_MIN_FREE_SPACE
+VIDEO_GATEWAY_MAX_UPLOAD_CHUNKS_PER_MINUTE
+VIDEO_GATEWAY_BEIDOU_DATA_ROOT
+VIDEO_GATEWAY_BEIDOU_DATABASE
+VIDEO_GATEWAY_BEIDOU_LIBRARY_ROOT
+```
+
+部署细节见 [WEB_GATEWAY_INTEGRATION.md](WEB_GATEWAY_INTEGRATION.md) 和 [WEB_GATEWAY_ARCHITECTURE.md](WEB_GATEWAY_ARCHITECTURE.md)。
+
+## Agent 模式
+
+1. 在 GUI 或 Web 页面生成 Agent 初始化命令。
+2. 将命令粘贴到负责该账户的 Codex 对话。
+3. Agent 完成带 nonce 的隔离子 Agent 能力探针并注册监听。
+4. 程序提交任务；Agent 读取动态清单、字幕和阶段规则，持续发送工作心跳。
+5. 服务端只接受满足完整性、索引、语言、时间轴、质量门槛和阶段证据的结果。
+
+字幕、发布物料与解说任务共用注册对话，但拥有不同事件和响应契约。发布物料使用 `PUBLISHING_JOB`，不能返回字幕数组或解说时间轴；解说最终审核必须由隔离子 Agent 实际读取服务器保存的最新修订制品，复制哈希或自报“已审核”不能替代服务器证据。
+
+## 两个产品版本
+
+- 域名部署使用本分支的 Agent 复合版：支持字幕 Agent、发布物料 Agent、解说 Agent 与本地确定性渲染。
+- `feature/api-only-platform` 保留为独立本地 API-only 版本，不覆盖本分支，也不作为域名服务入口。
+
+## 声纹与模型
+
+正式声纹清单位于 [recap/voices/library.json](recap/voices/library.json)，每个条目包含参考音频、参考文本、模型版本和试听文件。TTS 缓存键同时包含参考音频内容哈希，因此替换声纹文件后不会误用旧缓存。
+
+模型权重和虚拟环境不提交到 Git：
+
+```text
+../.model-cache/
+../.tts-envs/
+```
+
+Fish Speech 权重可能使用单独许可；商用前请自行确认所用模型、权重、声纹和素材的授权范围。
+
+## 测试
 
 ```powershell
-python .\subtitle_tool.py translate "D:\video\input.srt" "D:\video\input_en.srt" --provider openai-compatible --target-language English
+py -3.12 -m unittest discover -v
 ```
 
-硬字幕不能被真正删除；工具采用“遮盖旧字幕区域 + 烧录新字幕”的方式实现视觉替换。无字幕视频可通过 Faster-Whisper 先生成字幕。
-
-硬字幕 OCR 需要 PaddleOCR。你当前如果只处理画面硬字幕，不需要安装 faster-whisper：
+也可以按 [TESTING.md](TESTING.md) 运行 Web、字幕、解说、画面处理和前端语法检查。提交前至少执行：
 
 ```powershell
-pip install paddleocr paddlepaddle pillow
-pip install easyocr
+py -3.12 -m compileall -q .
+py -3.12 -m unittest discover
+git diff --check
 ```
 
-NVIDIA 显卡可把中文/英文 PaddleOCR 改为 CUDA 版。Windows + Python 3.12 示例（CUDA 12.9）：
+## 安全与隐私
 
-```powershell
-.\.venv-ocr\Scripts\python.exe -m pip uninstall -y paddlepaddle
-.\.venv-ocr\Scripts\python.exe -m pip install paddlepaddle-gpu==3.3.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu129/
-```
+- 不要把 API Key、访问密钥、Cloudflare 凭据或 `.env` 提交到仓库。
+- Web 访问密钥只用于认证调用者，不能替代 HTTPS。
+- 公网服务应限制访问来源、定期清理任务、监控磁盘与失败重试。
+- OCR、ASR、翻译和自动剪辑都可能出错，发布前应抽查字幕、时间轴、声音和版权状态。
 
-界面中的“OCR设备”选“自动”会优先使用 `gpu:0`，不可用时回退 CPU；选 `cuda` 则要求 CUDA 必须可用。应用会自动注册 pip 安装在虚拟环境中的 cuBLAS/cuDNN DLL，无需修改系统 PATH。
+## 许可证与责任
 
-只有需要“无字幕视频语音识别”时，才安装：
-
-```powershell
-pip install faster-whisper
-```
-
-无字幕语音识别：
-
-```powershell
-python .\subtitle_tool.py transcribe "D:\video\input.mp4" "D:\video\input_asr.srt" --device cuda --model-size medium
-```
-
-Faster-Whisper 使用 CTranslate2；`--device cuda` 会使用 NVIDIA CUDA + float16，`--device auto` 会优先 CUDA、不可用时回退 CPU int8。
-
-自动双源流水线会启用 Whisper 单词级时间戳，并在本地把单词分配到对应 OCR/软字幕时间段；不会再用较长 ASR 段扩大 OCR 字幕时间。同语言双源使用文本一致度、ASR 单词置信度、视觉文本洁净度和时间匹配质量评分；跨语言双源不比较字符相似度，改用视觉文本质量、ASR 置信度、时间匹配和 OCR 持续稳定性评分。启用智能审核后，主模型先翻译全部字幕，审核模型再读取整集有序上下文；置信阈值（默认 `0.82`）只标记风险，不再让高置信字幕绕过审核。单源和双源审核都只返回需要修改的稳定索引操作（替换、删除、合并），本地会限制总修改比例、删除数量和持续时间；合并只允许连续 2-8 条且最多覆盖 6 秒。全部视频翻译完成后，程序使用各集审核模型发现的实体证据做一次全剧一致性审核。每项改名必须引用至少两集真实存在的字幕索引，本地确认对应行确实出现旧名或规范名，并拒绝冲突、反向和链式替换；应用后会同步更新单集 JSON 终稿记录。任何额外审核失败都会保留上一阶段终稿继续处理。
-
-Ruta 暂未提供 V4 Pro 时，主模型和审核模型都可填写 `deepseek-v4-flash`；以后只需把“审核模型”改为 `deepseek-v4-pro`。
-
-自动估计硬字幕遮盖区域：
-
-```powershell
-python .\subtitle_tool.py detect-region "D:\video\input.mp4"
-```
-
-日志会输出建议的“遮盖起点高度”和“遮盖高度”，可填回界面滑块。
-
-## Docker 运行字幕工具
-
-如果不想在本机 Python 3.14 环境里安装 Whisper，可以用 Docker。Docker 内部使用独立 Python 3.11，不会影响系统 Python，也不会影响 GUI 里的其他功能。
-
-GUI 默认使用本机 Python 3.12 OCR 环境，也支持 Docker OCR 后端：字幕页里选择 `Docker OCR` 后，点击“开始处理”会临时启动一个容器；任务完成后容器自动退出，不需要常驻后端。只需要 Docker Desktop 本身处于运行状态。
-
-首次使用硬字幕 OCR 前先构建镜像：
-
-```powershell
-docker build --build-arg INSTALL_OCR=1 -t video-dedup-local:ocr .
-```
-
-构建默认镜像（FFmpeg + Faster-Whisper）：
-
-```powershell
-cd E:\wangyang\Documents\Codexfile\climind\video-dedup-local
-docker build -t video-dedup-local:latest .
-```
-
-把视频放到 `video-dedup-local\work` 目录后运行：
-
-```powershell
-.\docker-run.ps1 transcribe /work/input.mp4 /work/input_asr.srt --device cpu --model-size medium
-```
-
-如果你的 Docker Desktop 已配置 NVIDIA GPU，也可以尝试：
-
-```powershell
-docker run --rm -it --gpus all -v "${PWD}\work:/work" video-dedup-local:latest transcribe /work/input.mp4 /work/input_asr.srt --device cuda --model-size medium
-```
-
-OCR 镜像比较大，需要硬字幕自动定位时再构建：
-
-```powershell
-docker build --build-arg INSTALL_OCR=1 -t video-dedup-local:ocr .
-docker run --rm -it -v "${PWD}\work:/work" video-dedup-local:ocr detect-region /work/input.mp4
-```
-
-也可以用 Compose：
-
-```powershell
-docker compose build subtitle-tool
-docker compose run --rm subtitle-tool transcribe /work/input.mp4 /work/input_asr.srt --device cpu --model-size medium
-```
-
-注意：Tkinter 图形界面不建议跑在 Docker 里；Windows 本地 GUI 继续用 `start_gui.bat`，Docker 主要负责字幕识别、OCR、翻译、烧录等命令行任务。
-
-## 翻译方案怎么选
-
-不使用 LLM 也可以翻译，常见选择：
-
-- DeepL：质量很好，免费额度有限，超出收费；适合字幕直译。
-- Google Translate / Google Cloud Translation：质量稳定，通常云 API 收费；非官方免费接口不稳定。
-- Microsoft Translator：云 API，通常有免费额度，超出收费。
-- LibreTranslate：可自建，开源；公共实例常有限流，质量一般。
-- Argos Translate：本地离线、开源免费；质量比 DeepL/LLM 弱，但隐私最好。
-- NLLB / MarianMT：本地模型，免费开源；部署和语言对选择更麻烦，字幕口语化效果不如 LLM。
-
-如果是短剧字幕，我的建议：
-
-- 要快、便宜、可控：先用 DeepL/Google/Microsoft 这类传统翻译 API。
-- 要口语自然、剧情语气更顺：用 LLM。
-- 要完全离线：Argos Translate 或 NLLB，但需要接受翻译质量下降。
-
-## 自定义
-
-复制 `config.example.json`，修改参数后运行：
-
-```powershell
-python .\video_dedup.py input.mp4 output.mp4 --preset medium --config .\my-config.json
-```
-
-背景音乐使用本地文件绝对路径：
-
-```json
-{
-  "background_music": "D:\\music\\background.mp3",
-  "music_volume": 0.08
-}
-```
-
-批量任务也可以从指定目录（包括子目录）为每个视频随机选择一首音乐：
-
-```json
-{
-  "background_music": null,
-  "background_music_dir": "D:\\music\\library",
-  "music_volume": 0.08
-}
-```
-
-配置文件只需要填写想覆盖的字段，不必复制全部字段。
+代码、第三方模型、模型权重、字体、声纹、音乐和动态素材可能采用不同许可证。使用者负责确认素材权利、模型许可、目标平台规则和当地法律要求。画面变换或重新编码不改变原素材版权，也不保证任何平台审核或推荐结果。

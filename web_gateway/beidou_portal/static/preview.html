@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>短剧试看 · 北斗短剧</title>
+  <link rel="stylesheet" href="/beidou/static/styles.css">
+  <link rel="stylesheet" href="/beidou/static/library.css">
+</head>
+<body>
+  <header class="topbar preview-topbar">
+    <a class="back-link" href="/beidou/library">← 返回成品视频库</a>
+    <nav class="product-nav" aria-label="主要功能">
+      <a href="/">处理工作台</a>
+      <a href="/beidou/">短剧下载</a>
+      <a class="active" href="/beidou/library">成品剧库</a>
+    </nav>
+  </header>
+  <main class="preview-main">
+    <section class="preview-layout">
+      <div class="preview-stage">
+        <video id="previewPlayer" controls playsinline preload="metadata"></video>
+        <div id="noVideo" class="no-video" hidden>process 文件夹中没有浏览器可试播的视频。</div>
+      </div>
+      <aside class="preview-info panel">
+        <p class="eyebrow">DRAMA PREVIEW</p>
+        <h1 id="previewTitle">正在载入…</h1>
+        <p id="previewOriginalTitle" class="preview-original" hidden></p>
+        <div id="previewTags" class="preview-tags"></div>
+        <p id="previewBio" class="preview-bio">暂无简介</p>
+        <dl class="detail-list">
+          <div><dt>平台</dt><dd id="previewPlatform">—</dd></div>
+          <div><dt>发布时间</dt><dd id="previewDate">—</dd></div>
+          <div><dt>下载次数</dt><dd id="previewDownloads">—</dd></div>
+          <div><dt>成品文件</dt><dd id="previewFiles">—</dd></div>
+        </dl>
+        <a id="previewDownload" class="button primary download-link" href="#">下载整部成品包</a>
+        <p class="download-note">压缩包顶层目录会使用短剧名称，不保留 process 名称。</p>
+      </aside>
+    </section>
+    <section class="panel episode-panel">
+      <div class="section-heading"><div><span class="step">▶</span><h2>试看列表</h2></div><p>点击文件切换播放</p></div>
+      <div id="videoList" class="video-list"></div>
+    </section>
+    <section id="imageSection" class="panel episode-panel" hidden>
+      <div class="section-heading"><div><span class="step">▧</span><h2>图片</h2></div></div>
+      <div id="imageList" class="image-list"></div>
+    </section>
+  </main>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/beidou/static/portal.js"></script>
+  <script src="/beidou/static/preview.js"></script>
+</body>
+</html>
