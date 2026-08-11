@@ -63,8 +63,8 @@ def safe_upload_name(value: str, role: str = "video") -> str:
         "border": VIDEO_SUFFIXES | IMAGE_SUFFIXES,
         "effect": VIDEO_SUFFIXES | IMAGE_SUFFIXES,
         "effect_pool": VIDEO_SUFFIXES | IMAGE_SUFFIXES,
-        "cover": {".png"},
-        "series_info": {".txt"},
+        "cover": IMAGE_SUFFIXES,
+        "series_info": {".txt", ".md"},
     }[role]
     if suffix not in allowed:
         raise ValueError(f"{role} 不支持的文件格式: {suffix or '无扩展名'}")

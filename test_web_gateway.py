@@ -24,7 +24,12 @@ from web_gateway.agent_orchestration import (
 from web_gateway.app import create_app
 from web_gateway.database import GatewayDatabase
 from web_gateway.recap_service import RecapService
-from web_gateway.publishing_materials import TIKTOK_COPY_NAME, validate_publishing_plan
+from web_gateway.publishing_materials import (
+    PUBLISHING_METADATA_NAME,
+    TIKTOK_COPY_NAME,
+    parse_series_information,
+    validate_publishing_plan,
+)
 from web_gateway.security import normalize_public_recap_rendering, validate_public_http_url
 from web_gateway.settings import GatewaySettings
 from web_gateway.storage import JobStorage, safe_component
@@ -148,6 +153,7 @@ class WebGatewayTests(unittest.TestCase):
 
     def test_publishing_plan_enforces_platform_fyp_order_and_quality(self) -> None:
         valid = {
+            "schema_version": 2,
             "task_type": "publishing_materials",
             "language": "English",
             "platform": "reelshort",
@@ -155,6 +161,13 @@ class WebGatewayTests(unittest.TestCase):
             "title": "A promise that changed everything",
             "bio": "One secret forces two enemies to trust each other.",
             "hashtags": ["#reelshort", "#fyp", "#shortdrama", "#romance", "#drama"],
+            "is_ai_generated": "unknown",
+            "title_zh": "一个改变一切的承诺",
+            "bio_zh": "一个秘密迫使两个敌人彼此信任。",
+            "classification": {
+                "audience": "女频", "setting": "现代", "confidence": 0.91,
+                "rationale": "现代爱情与信任冲突。",
+            },
             "cover": {"episode_number_position": "bottom_right"},
             "quality_score": 9.1,
             "quality_notes": "Platform evidence and tag order were checked.",
@@ -164,6 +177,39 @@ class WebGatewayTests(unittest.TestCase):
             validate_publishing_plan({**valid, "hashtags": ["#fyp", "#reelshort", "#shortdrama", "#romance", "#drama"]})
         unknown = {**valid, "platform": None, "platform_evidence": None, "hashtags": ["#fyp", "#shortdrama", "#romance", "#drama", "#series"]}
         self.assertEqual(validate_publishing_plan(unknown)["hashtags"][0], "#fyp")
+
+    def test_downloader_markdown_is_authoritative_and_does_not_leak_file_list(self) -> None:
+        markdown = """# العائد من الساجن: ملك الصابات
+
+标题：العائد من الساجن: ملك الصابات
+
+简介：
+بعد خمس سنوات في السجن، يعود طلال لينتقم ممن خانوه.
+
+语言：阿拉伯语
+
+归属平台：StardustTV
+
+本地文件：
+- episode_01.mp4
+"""
+        path = Path(self.temporary.name) / "series.md"
+        path.write_text(markdown, encoding="utf-8")
+        parsed = parse_series_information(path, "fallback")
+        self.assertEqual(parsed["language"], "Arabic")
+        self.assertEqual(parsed["platform"], "StardustTV")
+        self.assertEqual(parsed["title"], "العائد من الساجن: ملك الصابات")
+        self.assertIn("خمس سنوات", parsed["synopsis"])
+        self.assertNotIn("episode_01", parsed["synopsis"])
+
+    def test_dedup_only_workflow_does_not_schedule_publishing_agent(self) -> None:
+        plan = WorkflowPlan.from_settings({"pipeline": {
+            "enable_subtitles": False,
+            "enable_publishing": False,
+            "enable_recap": False,
+            "enable_dedup": True,
+        }})
+        self.assertEqual(plan.stages, (DEDUP_STAGE,))
 
     def test_generic_publishing_agent_then_dedup_publishes_complete_processed_folder(self) -> None:
         video = b"fake-video"
@@ -223,7 +269,7 @@ class WebGatewayTests(unittest.TestCase):
             )
             self.assertEqual(fetched.status_code, 200, fetched.text)
         plan = {
-            "schema_version": 1,
+            "schema_version": 2,
             "task_type": "publishing_materials",
             "language": "English",
             "platform": None,
@@ -231,6 +277,13 @@ class WebGatewayTests(unittest.TestCase):
             "title": "One promise changes everything",
             "bio": "A dangerous family secret turns love into a fight for survival.",
             "hashtags": ["#fyp", "#shortdrama", "#familydrama", "#romance", "#series"],
+            "is_ai_generated": "unknown",
+            "title_zh": "一个承诺改变一切",
+            "bio_zh": "危险的家族秘密让爱情变成一场生存之战。",
+            "classification": {
+                "audience": "女频", "setting": "现代", "confidence": 0.9,
+                "rationale": "以现代爱情和家族秘密为核心。",
+            },
             "cover": {"episode_number_position": "bottom_right"},
             "quality_score": 9.2,
             "quality_notes": "No platform was invented; output order and copy were checked.",
@@ -256,8 +309,12 @@ class WebGatewayTests(unittest.TestCase):
         self.assertTrue((project.processed / "第一集_local.mp4").is_file())
         self.assertTrue((project.processed / "第一集_local_cover.png").is_file())
         copy_lines = (project.processed / TIKTOK_COPY_NAME).read_text(encoding="utf-8").splitlines()
-        self.assertEqual(len(copy_lines), 3)
-        self.assertTrue(copy_lines[2].startswith("#fyp "))
+        self.assertEqual(len(copy_lines), 4)
+        self.assertEqual(copy_lines[0], "AI-generated: Unknown")
+        self.assertTrue(copy_lines[3].startswith("#fyp "))
+        metadata = json.loads((project.processed / PUBLISHING_METADATA_NAME).read_text(encoding="utf-8"))
+        self.assertEqual(metadata["classification"]["audience"], "女频")
+        self.assertEqual(metadata["title_zh"], "一个承诺改变一切")
 
     def test_remote_security_rejects_private_llm_and_executable_rendering_fields(self) -> None:
         for url in (
@@ -889,12 +946,12 @@ class WebGatewayTests(unittest.TestCase):
         live_html = self.client.get("/")
         self.assertEqual(live_html.status_code, 200)
         self.assertIn("no-store", live_html.headers.get("cache-control", ""))
-        self.assertIn('content="20260810-02"', live_html.text)
-        self.assertIn('/static/app.js?v=20260810-02', live_html.text)
+        self.assertIn('content="20260811-01"', live_html.text)
+        self.assertIn('/static/app.js?v=20260811-01', live_html.text)
         self.assertNotIn("__WEB_BUILD_VERSION__", live_html.text)
         health = self.client.get("/health")
         self.assertEqual(health.status_code, 200)
-        self.assertEqual(health.json()["build_version"], "20260810-02")
+        self.assertEqual(health.json()["build_version"], "20260811-01")
         self.assertIn("no-store", health.headers.get("cache-control", ""))
         script = "\n".join(
             path.read_text(encoding="utf-8")

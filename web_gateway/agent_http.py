@@ -83,10 +83,13 @@ working. Do not send a subtitle response schema to a recap endpoint.
 dedup, subtitles, recap, or run by itself. Fetch its `rules_endpoint`, then
 fetch every path in `request.required_artifacts`, keep its heartbeat alive,
 and submit the exact publishing JSON to `submit_endpoint`. Do not return a
-subtitle array or recap timeline. Missing optional cover/TXT inputs are not an
-error: use the authoritative series name, do not invent a platform, and still
-produce title, Bio and hashtags. After `SUBMITTED`, continue polling; the
-server will deterministically render covers and write the paste-ready text.
+subtitle array or recap timeline. Missing optional cover/MD/TXT inputs are not
+an error. When downloader MD/TXT exists, treat its title, synopsis, language and
+source platform as authoritative; do not invent a platform. Produce source-
+language title/Bio/hashtags, Chinese display title/Bio, the fixed two-level
+classification, AI-generation status and cover layout required by the fetched
+rules. After `SUBMITTED`, continue polling; the server will deterministically
+render covers, write `bio.txt`, and save database-ready publishing metadata.
 
 The remaining quality, completeness, alignment, translation, review, and
 output-schema rules below are inherited verbatim from the local bridge.

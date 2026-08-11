@@ -26,7 +26,7 @@
     <div class="video-pickers">
       <label>选择视频（单个或多选）<input id="files" type="file" accept="video/*,.mkv,.m4v" multiple></label>
       <label>选择工程/素材文件夹 <button id="chooseSourceFolder" type="button">选择并授权文件夹</button></label>
-      <label>兼容模式（只读、仅读第一层）<input id="folderFiles" type="file" accept="video/*,.mkv,.m4v" webkitdirectory directory multiple></label>
+        <label>兼容模式（只读、仅读第一层）<input id="folderFiles" type="file" accept="video/*,.mkv,.m4v,.png,.jpg,.jpeg,.webp,.bmp,.txt,.md" webkitdirectory directory multiple></label>
     </div>
     <div class="video-pickers wide">
       <label>成片目录（默认工程/processed）<button id="chooseOutputFolder" type="button">更换 processed 目录</button></label>
@@ -51,8 +51,8 @@
       <summary>处理阶段（可独立或组合）</summary>
       <div class="toolbar inset">
         <label class="check"><input id="enableSubtitles" type="checkbox" checked>1. 字幕获取与翻译</label>
-        <label class="check"><input id="enablePublishing" type="checkbox">2. Agent 封面与发布文案</label>
-        <label>文案语言<select id="publishingLanguage"><option value="auto">自动跟随成片</option><option value="English">英语</option><option value="Arabic">阿拉伯语</option></select></label>
+        <label class="check"><input id="enablePublishing" type="checkbox">2. Agent 发布物料与剧集分类</label>
+        <label>文案语言（MD/TXT 优先）<select id="publishingLanguage"><option value="auto">自动识别</option><option value="English">无元数据时英语</option><option value="Arabic">无元数据时阿拉伯语</option></select></label>
         <label class="check"><input id="enableRecap" type="checkbox">3. 解说视频编排与剪辑</label>
         <label class="check"><input id="enableDedup" type="checkbox" checked>4. 二次去重</label>
         <span class="muted">固定顺序：字幕 → 发布物料 Agent → 解说 → 去重；纯“发布物料 + 去重”可独立运行</span>

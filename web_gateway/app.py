@@ -38,7 +38,7 @@ from .worker import GatewayWorker, normalize_settings
 from .workflows import RECAP_PLANNING_STAGE, RECAP_RENDER_STAGE, WorkflowCheckpointStore, WorkflowPlan
 
 
-WEB_BUILD_VERSION = "20260810-02"
+WEB_BUILD_VERSION = "20260811-01"
 
 
 def _redact_public_value(value: Any, roots: tuple[Path, ...] = ()) -> Any:

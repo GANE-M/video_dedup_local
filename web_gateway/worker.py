@@ -481,11 +481,8 @@ class GatewayWorker:
         selected = str(pipeline.get("publishing_language") or "auto")
         if selected != "auto":
             return selected
-        if pipeline.get("enable_recap"):
-            return str(normalized.get("recap", {}).get("target_language") or "English")
-        if pipeline.get("enable_subtitles"):
-            return str(pipeline.get("target_language") or "English")
-        return "English"
+        # Publishing copy follows downloader MD/TXT language, not subtitle/recap target language.
+        return "auto"
 
     def _begin_publishing_stage(
         self,
@@ -538,6 +535,7 @@ class GatewayWorker:
             PUBLISHING_RENDER_STAGE,
             {
                 "copy_file": Path(result["copy_file"]).name,
+                "metadata_file": Path(result["metadata_file"]).name,
                 "cover_files": [Path(item).name for item in result["cover_files"]],
             },
         )
