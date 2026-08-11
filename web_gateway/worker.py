@@ -813,6 +813,23 @@ class GatewayWorker:
             paths,
             categories=categories,
         )
+        if pipeline["enable_publishing"]:
+            try:
+                from .beidou_portal.service import scan_processed_library
+
+                project_root = Path(publication["directories"]["project_root"])
+                synced = scan_processed_library(project_root)
+                self.database.add_event(
+                    job["id"],
+                    "发布物料与剧集分类已同步到成品剧库数据库",
+                    data={"catalog_records": len(synced)},
+                )
+            except Exception as exc:
+                # The completed media remains valid. Catalog synchronization is
+                # separately retryable by pressing Scan on the library page.
+                self.database.add_event(
+                    job["id"], f"成品剧库数据库同步暂未完成：{exc}", level="warning"
+                )
         manifest["published"] = publication
         self.storage.write_json(paths.result / "manifest.json", manifest)
         # Retain the API secret only while the immutable job remains resumable.

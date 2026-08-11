@@ -53,6 +53,9 @@ class WebGatewayTests(unittest.TestCase):
             storage_root=root / "videos",
             service_root=root / "service",
             database_path=root / "service" / "gateway.sqlite3",
+            beidou_data_root=root / "service" / "beidou",
+            beidou_database_path=root / "service" / "beidou" / "downloads.db",
+            beidou_library_root=root / "library",
             public_base_url="https://video.example.test",
             chunk_size=4,
             maximum_chunk_size=8,
@@ -946,12 +949,12 @@ class WebGatewayTests(unittest.TestCase):
         live_html = self.client.get("/")
         self.assertEqual(live_html.status_code, 200)
         self.assertIn("no-store", live_html.headers.get("cache-control", ""))
-        self.assertIn('content="20260811-01"', live_html.text)
-        self.assertIn('/static/app.js?v=20260811-01', live_html.text)
+        self.assertIn('content="20260811-02"', live_html.text)
+        self.assertIn('/static/app.js?v=20260811-02', live_html.text)
         self.assertNotIn("__WEB_BUILD_VERSION__", live_html.text)
         health = self.client.get("/health")
         self.assertEqual(health.status_code, 200)
-        self.assertEqual(health.json()["build_version"], "20260811-01")
+        self.assertEqual(health.json()["build_version"], "20260811-02")
         self.assertIn("no-store", health.headers.get("cache-control", ""))
         script = "\n".join(
             path.read_text(encoding="utf-8")

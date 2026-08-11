@@ -38,7 +38,7 @@ from .worker import GatewayWorker, normalize_settings
 from .workflows import RECAP_PLANNING_STAGE, RECAP_RENDER_STAGE, WorkflowCheckpointStore, WorkflowPlan
 
 
-WEB_BUILD_VERSION = "20260811-01"
+WEB_BUILD_VERSION = "20260811-02"
 
 
 def _redact_public_value(value: Any, roots: tuple[Path, ...] = ()) -> Any:
@@ -393,6 +393,17 @@ def create_app(settings: GatewaySettings | None = None, *, start_worker: bool = 
     app.state.recap = recap
     app.state.publishing = publishing
     app.mount("/static", StaticFiles(directory=Path(__file__).with_name("static")), name="static")
+    from .beidou_portal import service as beidou_portal
+
+    beidou_portal.configure(
+        data_root=settings.beidou_data_root,
+        database_path=settings.beidou_database_path,
+        library_root=settings.beidou_library_root,
+        gateway_database_path=settings.database_path,
+        additional_library_roots=(settings.storage_root,),
+        default_library_scan_root=settings.storage_root,
+    )
+    app.mount("/beidou", beidou_portal.app, name="beidou")
     if settings.allowed_origins:
         app.add_middleware(
             CORSMiddleware,

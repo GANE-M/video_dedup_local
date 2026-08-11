@@ -67,3 +67,17 @@ python -m web_gateway.cli storage-cleanup --key-id <id> --category chunks --exec
 - `resume.js`、`environment.js`、`storage.js`：恢复、预检和存储管理。
 
 UI 只组织请求和展示结果，业务处理均在后端。
+
+## 下载中心与成品剧库
+
+`web_gateway/beidou_portal/` 是并入主 FastAPI 服务的下载/剧库子应用，统一挂载在 `/beidou`：
+
+- 下载页和剧库页共享主站导航、HTTPS 域名和访问密钥；
+- 子应用使用短期 HttpOnly 会话支持 `<video>`、封面和 ZIP 下载，不能凭页面 URL 绕过鉴权；
+- 扫描路径只能位于配置的视频库或主存储根目录，不能把任意服务器路径作为下载目录；
+- 下载数据库保留 `dramas`、`episodes` 和 `processed_library` 三类数据，并原地扩展发布物料字段；
+- `processed_library` 是当前平台展示数据库契约，包含中文展示信息、源语言发布信息、平台证据结果、
+  AI 状态、受众/题材分类、置信度、来源任务和完整 metadata JSON；
+- 扫描器优先读取 `processed/publishing_metadata.json`，没有时才回退下载器 MD 和关键词分类。
+
+浏览器不直接访问 SQLite；分类修改、下载计数和元数据同步均由服务端事务完成。

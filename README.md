@@ -159,6 +159,16 @@ py -3.12 -m pip install -r requirements-web.txt
 
 默认仅应监听本机或受保护的反向代理。远程部署建议使用 HTTPS Tunnel，并为每个用户创建独立访问密钥。
 
+主工作台右上角同时提供两个同源页面：
+
+- `/beidou/`：北斗授权短剧下载中心，保留分集断点、失败重试、封面/MD 与 CPS 下载能力；
+- `/beidou/library`：成品剧库，优先扫描 `processed/`，兼容旧 `process/`，可试看、下载和人工修正两级分类。
+
+两个页面不再需要独立启动 8767 端口，所有 API 复用主程序访问密钥。默认复用相邻
+`inbeidou-downloader/data/downloads.db` 的历史数据；不存在旧工程时改用服务目录。数据库迁移是幂等的，
+现有 `dramas`/`episodes` 记录不会丢失。扫描成品时会把 `publishing_metadata.json` 中的源语言、平台、
+AI 状态、发布标题/Bio/hashtag、中文标题/Bio、两级分类、置信度和依据写入 `processed_library`，供后续平台数据库直接导入。
+
 服务端具有以下边界：
 
 - 用户、任务、工程目录和发布制品隔离。
@@ -176,6 +186,9 @@ VIDEO_GATEWAY_MAX_JOB_UPLOAD_SIZE
 VIDEO_GATEWAY_MAX_ACCOUNT_STORAGE
 VIDEO_GATEWAY_MIN_FREE_SPACE
 VIDEO_GATEWAY_MAX_UPLOAD_CHUNKS_PER_MINUTE
+VIDEO_GATEWAY_BEIDOU_DATA_ROOT
+VIDEO_GATEWAY_BEIDOU_DATABASE
+VIDEO_GATEWAY_BEIDOU_LIBRARY_ROOT
 ```
 
 部署细节见 [WEB_GATEWAY_INTEGRATION.md](WEB_GATEWAY_INTEGRATION.md) 和 [WEB_GATEWAY_ARCHITECTURE.md](WEB_GATEWAY_ARCHITECTURE.md)。

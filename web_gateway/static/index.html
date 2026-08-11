@@ -6,6 +6,7 @@
   <meta name="app-build" content="__WEB_BUILD_VERSION__">
   <title>Andymori 视频处理工作台</title>
   <link rel="stylesheet" href="/static/styles.css?v=__WEB_BUILD_VERSION__">
+  <link rel="stylesheet" href="/static/portal-nav.css?v=__WEB_BUILD_VERSION__">
 </head>
 <body>
   <div id="versionRefreshNotice" class="version-refresh-notice hidden" role="status">
@@ -14,7 +15,13 @@
   </div>
 <header class="topbar">
   <div><h1>Andymori 视频处理工作台</h1><p>批量去重、字幕识别翻译、动态特效与 Agent 协作</p></div>
-  <div id="health" class="pill">正在连接服务…</div>
+  <div class="topbar-actions">
+    <nav class="portal-nav" aria-label="扩展页面">
+      <a href="/beidou/">短剧下载</a>
+      <a href="/beidou/library">成品剧库</a>
+    </nav>
+    <div id="health" class="pill">正在连接服务…</div>
+  </div>
 </header>
 
 <main>

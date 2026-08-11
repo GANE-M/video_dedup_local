@@ -14,6 +14,9 @@ class GatewaySettings:
     storage_root: Path
     service_root: Path
     database_path: Path
+    beidou_data_root: Path
+    beidou_database_path: Path
+    beidou_library_root: Path
     public_base_url: str
     chunk_size: int = 32 * 1024 * 1024
     maximum_chunk_size: int = 40 * 1024 * 1024
@@ -40,6 +43,17 @@ class GatewaySettings:
         database_path = Path(
             os.environ.get("VIDEO_GATEWAY_DATABASE", service_root / "gateway.sqlite3")
         ).expanduser().resolve()
+        legacy_beidou_data = project_root.parent / "inbeidou-downloader" / "data"
+        default_beidou_data = legacy_beidou_data if legacy_beidou_data.is_dir() else service_root / "beidou"
+        beidou_data_root = Path(
+            os.environ.get("VIDEO_GATEWAY_BEIDOU_DATA_ROOT", default_beidou_data)
+        ).expanduser().resolve()
+        beidou_database_path = Path(
+            os.environ.get("VIDEO_GATEWAY_BEIDOU_DATABASE", beidou_data_root / "downloads.db")
+        ).expanduser().resolve()
+        beidou_library_root = Path(
+            os.environ.get("VIDEO_GATEWAY_BEIDOU_LIBRARY_ROOT", r"E:\wangyang\Videos\北斗视频库")
+        ).expanduser().resolve()
         public_base_url = os.environ.get("VIDEO_GATEWAY_PUBLIC_URL", "http://127.0.0.1:8765").rstrip("/")
         chunk_size = max(1024 * 1024, int(os.environ.get("VIDEO_GATEWAY_CHUNK_SIZE", 32 * 1024 * 1024)))
         allowed_origins = tuple(
@@ -52,6 +66,9 @@ class GatewaySettings:
             storage_root=storage_root,
             service_root=service_root,
             database_path=database_path,
+            beidou_data_root=beidou_data_root,
+            beidou_database_path=beidou_database_path,
+            beidou_library_root=beidou_library_root,
             public_base_url=public_base_url,
             chunk_size=chunk_size,
             maximum_chunk_size=max(40 * 1024 * 1024, chunk_size + 1024 * 1024),
@@ -74,3 +91,6 @@ class GatewaySettings:
         self.storage_root.mkdir(parents=True, exist_ok=True)
         self.service_root.mkdir(parents=True, exist_ok=True)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self.beidou_data_root.mkdir(parents=True, exist_ok=True)
+        self.beidou_database_path.parent.mkdir(parents=True, exist_ok=True)
+        self.beidou_library_root.mkdir(parents=True, exist_ok=True)

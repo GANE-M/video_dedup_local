@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>北斗短剧下载器</title>
+  <link rel="stylesheet" href="/beidou/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">INBEIDOU ARCHIVE</p>
+      <h1>北斗短剧下载器</h1>
+      <p class="subtitle">按语言和发布时间筛选，整剧下载视频、封面、简介与 CPS 链接。</p>
+    </div>
+    <div class="header-actions">
+      <nav class="product-nav" aria-label="主要功能">
+        <a href="/">处理工作台</a>
+        <a class="active" href="/beidou/">短剧下载</a>
+        <a href="/beidou/library">成品剧库</a>
+      </nav>
+      <div id="authBadge" class="status-badge neutral"><span></span>未上传登录文件</div>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel setup-panel">
+      <div class="section-heading">
+        <div>
+          <span class="step">01</span>
+          <h2>下载设置</h2>
+        </div>
+        <p>登录信息只保存在本机，服务仅监听 127.0.0.1。</p>
+      </div>
+      <div class="setup-grid">
+        <label class="upload-box" id="uploadBox">
+          <input id="authFile" type="file" accept=".txt,.json,.cookies">
+          <span class="upload-icon">↑</span>
+          <strong>上传 Cookie / Token 文件</strong>
+          <small id="uploadHint">支持 Netscape cookies.txt、Cookie JSON、含 localStorage token 的 JSON 或纯 Token 文本</small>
+        </label>
+        <div class="field-stack">
+          <label for="outputDir">保存目录</label>
+          <input id="outputDir" type="text" placeholder="E:\wangyang\Videos\北斗视频库">
+          <small>目录结构：保存目录 / 短剧名 / 分集视频 + 封面 + MD</small>
+        </div>
+        <div class="field-stack compact-setting">
+          <label for="sleepSeconds">整剧启动间隔</label>
+          <div class="suffix-input">
+            <input id="sleepSeconds" type="number" value="5" min="5" max="120">
+            <span>秒</span>
+          </div>
+          <small>全局最低 5 秒启动一部新短剧</small>
+        </div>
+        <div class="field-stack compact-setting">
+          <label for="maxWorkers">同时下载短剧</label>
+          <select id="maxWorkers">
+            <option value="1">1 部（保守）</option>
+            <option value="2" selected>2 部（推荐）</option>
+            <option value="3">3 部（较快）</option>
+          </select>
+          <small>每部内部仍然逐集下载；最大 3 部</small>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel library-panel">
+      <div class="section-heading">
+        <div>
+          <span class="step">02</span>
+          <h2>选择短剧</h2>
+        </div>
+        <p id="catalogSummary">设置筛选条件后查询。</p>
+      </div>
+
+      <div class="filters">
+        <div class="field-stack">
+          <label for="language">语言</label>
+          <select id="language"><option value="10">阿拉伯语</option></select>
+        </div>
+        <div class="field-stack">
+          <label for="dateFrom">发布时间从</label>
+          <input id="dateFrom" type="date">
+        </div>
+        <div class="field-stack">
+          <label for="dateTo">发布时间至</label>
+          <input id="dateTo" type="date">
+        </div>
+        <div class="field-stack">
+          <label for="appId">来源平台</label>
+          <select id="appId"><option value="">全部平台</option></select>
+        </div>
+        <div class="field-stack search-field">
+          <label for="search">剧名</label>
+          <input id="search" type="search" placeholder="输入剧名关键词">
+        </div>
+        <button id="searchButton" class="button primary">查询短剧</button>
+      </div>
+
+      <div class="table-actions">
+        <div class="selection-note"><span id="selectedCount">0</span> 部已选择</div>
+        <div>
+          <button id="downloadSelected" class="button secondary" disabled>下载所选</button>
+          <button id="downloadFiltered" class="button primary" disabled>下载全部筛选结果</button>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="check-cell"><input id="selectPage" type="checkbox" aria-label="选择当前页"></th>
+              <th>短剧</th>
+              <th>语言</th>
+              <th>平台</th>
+              <th>发布时间</th>
+              <th>集数</th>
+              <th>可下载</th>
+            </tr>
+          </thead>
+          <tbody id="catalogBody">
+            <tr><td colspan="7" class="empty-state">等待查询</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="pagination">
+        <button id="prevPage" class="icon-button" disabled>←</button>
+        <span id="pageLabel">第 1 页</span>
+        <button id="nextPage" class="icon-button" disabled>→</button>
+      </div>
+    </section>
+
+    <section class="panel job-panel">
+      <div class="section-heading">
+        <div>
+          <span class="step">03</span>
+          <h2>下载进度</h2>
+        </div>
+        <div class="job-controls">
+          <span id="jobStatus" class="status-badge neutral"><span></span>暂无任务</span>
+          <button id="cancelJob" class="button danger ghost" disabled>取消任务</button>
+        </div>
+      </div>
+
+      <div class="current-object">
+        <p>正在处理</p>
+        <strong id="currentTitle">—</strong>
+        <span id="outputPath">下载任务尚未开始</span>
+      </div>
+      <div class="progress-track"><div id="progressBar"></div></div>
+
+      <div class="metrics">
+        <article><span>短剧</span><strong id="seriesMetric">0 / 0</strong></article>
+        <article><span>已下载分集</span><strong id="episodeMetric">0</strong></article>
+        <article><span>断点 / 去重跳过</span><strong id="skipMetric">0</strong></article>
+        <article><span>待重试</span><strong id="retryMetric">0</strong></article>
+        <article><span>已放弃</span><strong id="failMetric">0</strong></article>
+      </div>
+
+      <div class="log-head">
+        <h3>运行日志</h3>
+        <button id="clearLog" class="text-button">清空显示</button>
+      </div>
+      <div id="logConsole" class="log-console"><p class="muted-log">任务日志会显示在这里。</p></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/beidou/static/portal.js"></script>
+  <script src="/beidou/static/app.js"></script>
+</body>
+</html>

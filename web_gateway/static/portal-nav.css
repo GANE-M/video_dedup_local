@@ -1,0 +1,26 @@
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.portal-nav {
+  display: flex;
+  gap: 8px;
+}
+
+.portal-nav a {
+  color: #fff;
+  text-decoration: none;
+  border: 1px solid rgb(255 255 255 / 34%);
+  border-radius: 9px;
+  padding: 9px 13px;
+  background: rgb(255 255 255 / 8%);
+  font-weight: 700;
+}
+
+.portal-nav a:hover {
+  background: rgb(255 255 255 / 18%);
+}
